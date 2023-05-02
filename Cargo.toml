@@ -9,3 +9,5 @@ repository = "https://github.com/DarthChungo/rippify"
 readme = "README.md"
 
 [dependencies]
+getopts = "0.2"
+debug_print = "1.0.0"
