@@ -1,0 +1,11 @@
+[package]
+name = "rippify"
+version = "0.1.0"
+authors = ["Antonio de Haro"]
+license = "GPL"
+description = "Downloads songs from Spotify to ogg files (requires premium account)"
+keywords = ["spotify"]
+repository = "https://github.com/DarthChungo/rippify"
+readme = "README.md"
+
+[dependencies]
