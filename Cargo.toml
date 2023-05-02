@@ -1,6 +1,7 @@
 [package]
 name = "rippify"
 version = "0.1.0"
+edition = "2021"
 authors = ["Antonio de Haro"]
 license = "GPL"
 description = "Downloads songs from Spotify to ogg files (requires premium account)"
@@ -11,3 +12,8 @@ readme = "README.md"
 [dependencies]
 getopts = "0.2"
 debug_print = "1.0.0"
+tokio = { version = "1.28.0", features = ["full"] }
+librespot-core = "0.4.2"
+librespot-metadata = "0.4.2"
+librespot-audio = "0.4.2"
+lazy-regex = "2.5.0"
