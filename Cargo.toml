@@ -2,7 +2,7 @@
 name = "rippify"
 version = "0.1.0"
 authors = ["Antonio de Haro"]
-license = "GPL"
+license = "MIT"
 description = "Downloads songs from Spotify to ogg files (requires premium account)"
 keywords = ["spotify"]
 repository = "https://github.com/DarthChungo/rippify"
