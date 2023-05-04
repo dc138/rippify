@@ -5,8 +5,8 @@ use librespot_core::{
 use debug_print::debug_println as dprintln;
 use getopts::Options;
 use lazy_regex::regex;
-use librespot_metadata::{Album, Metadata, Playlist};
-use std::{collections::HashSet, env};
+use librespot_metadata::{Album, FileFormat, Metadata, Playlist, Track};
+use std::{collections::HashSet, env, process::exit};
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [OPTIONS] URIs...", program);
@@ -56,50 +56,96 @@ async fn main() {
     let album_url = regex!(r"^(http(s)?://)?open\.spotify\.com/album/([[:alnum:]]{22})$");
 
     let session_config = SessionConfig::default();
-    let session = Session::connect(session_config, credentials, None, false)
-        .await
-        .unwrap();
 
-    let mut tracks: HashSet<SpotifyId> = HashSet::new();
+    let session = match Session::connect(session_config, credentials, None, false).await {
+        Ok(session) => session,
+        Err(err) => {
+            println!("Cannot log in: {}", err.to_string().to_lowercase());
+            exit(1);
+        }
+    };
 
-    dprintln!("input tracks:");
+    let mut track_ids: HashSet<SpotifyId> = HashSet::new();
+
+    println!("Input resources:");
 
     for line in &input {
         if let Some(captures) = track_uri.captures(&line).or(track_url.captures(&line)) {
             let id_str = captures.iter().last().unwrap().unwrap().as_str();
             let id = SpotifyId::from_base62(&id_str).unwrap();
-            dprintln!("read track: {}", &id_str);
-            tracks.insert(id);
+
+            println!("  track: {}", &id_str);
+
+            track_ids.insert(id);
         } else if let Some(captures) = pl_uri.captures(&line).or(pl_url.captures(&line)) {
             let id_str = captures.iter().last().unwrap().unwrap().as_str();
             let id = SpotifyId::from_base62(&id_str).unwrap();
-            dprintln!("read playlist: {}", &id_str);
-            let playlist = Playlist::get(&session.0, id)
-                .await
-                .expect("error getting playlist metadata");
+
+            println!("  playlist: {}", &id_str);
+
+            let playlist = match Playlist::get(&session.0, id).await {
+                Ok(playlist) => playlist,
+                Err(err) => {
+                    println!("    error getting playlist metadata: {:?}, skipping", err);
+                    continue;
+                }
+            };
 
             for track in playlist.tracks {
-                tracks.insert(track);
+                track_ids.insert(track);
             }
         } else if let Some(captures) = album_uri.captures(&line).or(album_url.captures(&line)) {
             let id_str = captures.iter().last().unwrap().unwrap().as_str();
             let id = SpotifyId::from_base62(&id_str).unwrap();
-            dprintln!("read album: {}", &id_str);
-            let album = Album::get(&session.0, id)
-                .await
-                .expect("error getting album metadata");
+
+            println!("  album: {}", &id_str);
+
+            let album = match Album::get(&session.0, id).await {
+                Ok(album) => album,
+                Err(err) => {
+                    println!("    error getting album metadata: {:?}, skipping", err);
+                    continue;
+                }
+            };
 
             for track in album.tracks {
-                tracks.insert(track);
+                track_ids.insert(track);
             }
         } else {
-            panic!("unkown input: {}", line);
+            println!("  unkown input: {}, skipping", line);
         }
     }
 
-    dprintln!("parsed {} tracks:", tracks.len());
+    if track_ids.len() == 0 {
+        println!("Didn't get any tracks");
+        exit(0);
+    }
 
-    for track in &tracks {
-        dprintln!("got track: {}", track.to_uri().unwrap());
+    println!("Parsed {} tracks:", track_ids.len());
+
+    for track_id in track_ids {
+        println!("  track: {}", track_id.to_uri().unwrap());
+
+        let track = Track::get(&session.0, track_id).await.unwrap();
+
+        if !track.available {
+            println!("    unavailable, skipping");
+            continue;
+        }
+
+        let track_file_id = match track
+            .files
+            .get(&FileFormat::OGG_VORBIS_320)
+            .or(track.files.get(&FileFormat::OGG_VORBIS_160))
+            .or(track.files.get(&FileFormat::OGG_VORBIS_96))
+        {
+            Some(format) => format,
+            None => {
+                println!("    no suitable format found, skipping");
+                continue;
+            }
+        };
+
+        //let track_file_key = session.0.audio_key().
     }
 }
