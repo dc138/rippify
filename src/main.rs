@@ -1,3 +1,4 @@
+use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_core::{
     authentication::Credentials, config::SessionConfig, session::Session, spotify_id::SpotifyId,
 };
@@ -6,7 +7,7 @@ use debug_print::debug_println as dprintln;
 use getopts::Options;
 use lazy_regex::regex;
 use librespot_metadata::{Album, FileFormat, Metadata, Playlist, Track};
-use std::{collections::HashSet, env, process::exit};
+use std::{collections::HashSet, env, fs, io::Read, process::exit};
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [OPTIONS] URIs...", program);
@@ -46,19 +47,15 @@ async fn main() {
     let pass = matches.opt_str("p").unwrap();
 
     dprintln!("user: {}, pass: {}", &user, &pass);
+
     let credentials = Credentials::with_password(&user, &pass);
-
-    let track_uri = regex!(r"^spotify:track:([[:alnum:]]{22})$");
-    let track_url = regex!(r"^(http(s)?://)?open\.spotify\.com/track/([[:alnum:]]{22})$");
-    let pl_uri = regex!(r"^spotify:playlist:([[:alnum:]]{22})$");
-    let pl_url = regex!(r"^(http(s)?://)?open\.spotify\.com/playlist/([[:alnum:]]{22})$");
-    let album_uri = regex!(r"^spotify:album:([[:alnum:]]{22})$");
-    let album_url = regex!(r"^(http(s)?://)?open\.spotify\.com/album/([[:alnum:]]{22})$");
-
     let session_config = SessionConfig::default();
 
     let session = match Session::connect(session_config, credentials, None, false).await {
-        Ok(session) => session,
+        Ok(session) => {
+            println!("Logged in as {}", user);
+            session.0
+        }
         Err(err) => {
             println!("Cannot log in: {}", err.to_string().to_lowercase());
             exit(1);
@@ -66,6 +63,13 @@ async fn main() {
     };
 
     let mut track_ids: HashSet<SpotifyId> = HashSet::new();
+
+    let track_uri = regex!(r"^spotify:track:([[:alnum:]]{22})$");
+    let track_url = regex!(r"^(http(s)?://)?open\.spotify\.com/track/([[:alnum:]]{22})$");
+    let pl_uri = regex!(r"^spotify:playlist:([[:alnum:]]{22})$");
+    let pl_url = regex!(r"^(http(s)?://)?open\.spotify\.com/playlist/([[:alnum:]]{22})$");
+    let album_uri = regex!(r"^spotify:album:([[:alnum:]]{22})$");
+    let album_url = regex!(r"^(http(s)?://)?open\.spotify\.com/album/([[:alnum:]]{22})$");
 
     println!("Input resources:");
 
@@ -83,7 +87,7 @@ async fn main() {
 
             println!("  playlist: {}", &id_str);
 
-            let playlist = match Playlist::get(&session.0, id).await {
+            let playlist = match Playlist::get(&session, id).await {
                 Ok(playlist) => playlist,
                 Err(err) => {
                     println!("    error getting playlist metadata: {:?}, skipping", err);
@@ -100,7 +104,7 @@ async fn main() {
 
             println!("  album: {}", &id_str);
 
-            let album = match Album::get(&session.0, id).await {
+            let album = match Album::get(&session, id).await {
                 Ok(album) => album,
                 Err(err) => {
                     println!("    error getting album metadata: {:?}, skipping", err);
@@ -126,7 +130,7 @@ async fn main() {
     for track_id in track_ids {
         println!("  track: {}", track_id.to_uri().unwrap());
 
-        let track = Track::get(&session.0, track_id).await.unwrap();
+        let track = Track::get(&session, track_id).await.unwrap();
 
         if !track.available {
             println!("    unavailable, skipping");
@@ -146,6 +150,63 @@ async fn main() {
             }
         };
 
-        //let track_file_key = session.0.audio_key().
+        let track_file_key = match session.audio_key().request(track.id, *track_file_id).await {
+            Ok(key) => key,
+            Err(err) => {
+                println!("    cannot get audio key: {:?}, skipping", err);
+                continue;
+            }
+        };
+
+        let mut track_buffer = Vec::<u8>::new();
+        let mut track_buffer_decrypted = Vec::<u8>::new();
+
+        let mut track_file_audio = match AudioFile::open(&session, *track_file_id, 40, true).await {
+            Ok(audio) => audio,
+            Err(err) => {
+                println!("    cannot get audio file: {:?}, skipping", err);
+                continue;
+            }
+        };
+
+        match track_file_audio.read_to_end(&mut track_buffer) {
+            Ok(_) => {}
+            Err(err) => {
+                println!(
+                    "    cannot get track file audio: {}, skipping",
+                    err.to_string()
+                );
+                continue;
+            }
+        };
+
+        match AudioDecrypt::new(track_file_key, &track_buffer[..])
+            .read_to_end(&mut track_buffer_decrypted)
+        {
+            Ok(_) => {}
+            Err(err) => {
+                println!(
+                    "    cannot decrypt audio file: {}, skipping",
+                    err.to_string()
+                );
+                continue;
+            }
+        };
+
+        // TODO: fix this
+        let track_filename = format!("{}.ogg", track.name.to_string());
+
+        match fs::write(&track_filename, &track_buffer_decrypted[0xa7..]) {
+            Ok(_) => {
+                println!("    wrote {}", track_filename);
+            }
+            Err(err) => {
+                println!(
+                    "    cannot write output file: {}, skipping",
+                    err.to_string()
+                );
+                continue;
+            }
+        };
     }
 }
