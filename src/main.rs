@@ -5,7 +5,8 @@ use librespot_core::{
 use debug_print::debug_println as dprintln;
 use getopts::Options;
 use lazy_regex::regex;
-use std::{env, panic::UnwindSafe};
+use librespot_metadata::{Album, Metadata, Playlist};
+use std::{collections::HashSet, env};
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [OPTIONS] URIs...", program);
@@ -51,23 +52,54 @@ async fn main() {
     let track_url = regex!(r"^(http(s)?://)?open\.spotify\.com/track/([[:alnum:]]{22})$");
     let pl_uri = regex!(r"^spotify:playlist:([[:alnum:]]{22})$");
     let pl_url = regex!(r"^(http(s)?://)?open\.spotify\.com/playlist/([[:alnum:]]{22})$");
+    let album_uri = regex!(r"^spotify:album:([[:alnum:]]{22})$");
+    let album_url = regex!(r"^(http(s)?://)?open\.spotify\.com/album/([[:alnum:]]{22})$");
 
     let session_config = SessionConfig::default();
-    /*let session = Session::connect(session_config, credentials, None, false)
-    .await
-    .unwrap();*/
+    let session = Session::connect(session_config, credentials, None, false)
+        .await
+        .unwrap();
 
-    for line in input {
+    let mut tracks: HashSet<SpotifyId> = HashSet::new();
+
+    dprintln!("input tracks:");
+
+    for line in &input {
         if let Some(captures) = track_uri.captures(&line).or(track_url.captures(&line)) {
-            let id = SpotifyId::from_base62(captures.iter().last().unwrap().unwrap().as_str())
-                .expect(&format!("cannot parse id from {}", &line));
-            dprintln!("processing track: {}", &id.to_uri().unwrap());
+            let id_str = captures.iter().last().unwrap().unwrap().as_str();
+            let id = SpotifyId::from_base62(&id_str).unwrap();
+            dprintln!("read track: {}", &id_str);
+            tracks.insert(id);
         } else if let Some(captures) = pl_uri.captures(&line).or(pl_url.captures(&line)) {
-            let id = SpotifyId::from_base62(captures.iter().last().unwrap().unwrap().as_str())
-                .expect(&format!("cannot parse id from {}", &line));
-            dprintln!("processing playlist: {}", &id.to_uri().unwrap());
+            let id_str = captures.iter().last().unwrap().unwrap().as_str();
+            let id = SpotifyId::from_base62(&id_str).unwrap();
+            dprintln!("read playlist: {}", &id_str);
+            let playlist = Playlist::get(&session.0, id)
+                .await
+                .expect("error getting playlist metadata");
+
+            for track in playlist.tracks {
+                tracks.insert(track);
+            }
+        } else if let Some(captures) = album_uri.captures(&line).or(album_url.captures(&line)) {
+            let id_str = captures.iter().last().unwrap().unwrap().as_str();
+            let id = SpotifyId::from_base62(&id_str).unwrap();
+            dprintln!("read album: {}", &id_str);
+            let album = Album::get(&session.0, id)
+                .await
+                .expect("error getting album metadata");
+
+            for track in album.tracks {
+                tracks.insert(track);
+            }
         } else {
             panic!("unkown input: {}", line);
         }
+    }
+
+    dprintln!("parsed {} tracks:", tracks.len());
+
+    for track in &tracks {
+        dprintln!("got track: {}", track.to_uri().unwrap());
     }
 }
