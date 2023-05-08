@@ -6,8 +6,9 @@ use librespot_core::{
 use debug_print::debug_println as dprintln;
 use getopts::Options;
 use lazy_regex::regex;
-use librespot_metadata::{Album, FileFormat, Metadata, Playlist, Track};
-use std::{collections::HashSet, env, fs, io::Read, process::exit};
+use librespot_metadata::{Album, Artist, FileFormat, Metadata, Playlist, Track};
+use std::{collections::HashSet, env, fs, io::Read, path::Path, process::exit};
+use tokio::fs::create_dir_all;
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [OPTIONS] URIs...", program);
@@ -24,6 +25,12 @@ async fn main() {
     opts.optflag("h", "help", "print the help menu");
     opts.optopt("u", "user", "user login name, required", "USER");
     opts.optopt("p", "pass", "user password, required", "PASS");
+    opts.optopt(
+        "f",
+        "format",
+        "output format to use. {author}/{album}/{name}.{ext} is used by default. Available format specifiers are: {author}, {album}, {name} and {ext}",
+        "FMT",
+    );
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
@@ -42,6 +49,14 @@ async fn main() {
         print_usage(&program, opts);
         return;
     }
+
+    let default_format: String = "{author}/{album}/{name}.{ext}".to_owned();
+
+    let output_format = if let Some(format) = matches.opt_str("f") {
+        format
+    } else {
+        default_format
+    };
 
     let user = matches.opt_str("u").unwrap();
     let pass = matches.opt_str("p").unwrap();
@@ -128,13 +143,63 @@ async fn main() {
     println!("Parsed {} tracks:", track_ids.len());
 
     for track_id in track_ids {
-        println!("  track: {}", track_id.to_uri().unwrap());
+        println!("  track: {}", track_id.to_base62().unwrap());
 
         let track = Track::get(&session, track_id).await.unwrap();
 
         if !track.available {
             println!("    unavailable, skipping");
             continue;
+        }
+
+        let track_first_artist =
+            match Artist::get(&session, *track.artists.iter().next().unwrap()).await {
+                Ok(artist) => artist,
+                Err(err) => {
+                    println!("    cannot get artist for track: {:?}, skipping...", err);
+                    continue;
+                }
+            };
+
+        let track_album = match Album::get(&session, track.album).await {
+            Ok(album) => album,
+            Err(err) => {
+                println!("    cannot get artist for song: {:?}", err);
+                continue;
+            }
+        };
+
+        let track_output_path = output_format
+            .clone()
+            .replace("{author}", &track_first_artist.name)
+            .replace("{album}", &track_album.name)
+            .replace("{name}", track.name.as_str())
+            .replace("{ext}", "ogg"); // TODO: change this
+
+        if Path::new(&track_output_path).exists() {
+            println!(
+                "    output file \"{}\" already exists, skipping...",
+                track_output_path
+            );
+            continue;
+        }
+
+        let slice_pos = match track_output_path.rfind('/') {
+            Some(pos) => pos,
+            None => {
+                println!("    invalid format string {}, aborting...", output_format);
+                exit(1);
+            }
+        };
+
+        let track_folder_path = &track_output_path[..slice_pos + 1];
+
+        if create_dir_all(track_folder_path).await.is_err() {
+            print!(
+                "    cannot create folders: {}, aborting...",
+                track_folder_path
+            );
+            exit(1);
         }
 
         let track_file_id = match track
@@ -202,16 +267,14 @@ async fn main() {
 
         println!("    writing output file");
 
-        // TODO: fix this
-        let track_filename = format!("{}.ogg", track.name.to_string());
-
-        match fs::write(&track_filename, &track_buffer_decrypted[0xa7..]) {
+        match fs::write(&track_output_path, &track_buffer_decrypted[0xa7..]) {
             Ok(_) => {
-                println!("    wrote \"{}\"", track_filename);
+                println!("    wrote \"{}\"", track_output_path);
             }
             Err(err) => {
                 println!(
-                    "    cannot write output file: {}, skipping",
+                    "    cannot write {}: {}, skipping",
+                    track_output_path,
                     err.to_string()
                 );
                 continue;
