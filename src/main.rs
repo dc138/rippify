@@ -139,11 +139,14 @@ async fn main() {
 
         let track_file_id = match track
             .files
-            .get(&FileFormat::OGG_VORBIS_320)
-            .or(track.files.get(&FileFormat::OGG_VORBIS_160))
-            .or(track.files.get(&FileFormat::OGG_VORBIS_96))
+            .get_key_value(&FileFormat::OGG_VORBIS_320)
+            .or(track.files.get_key_value(&FileFormat::OGG_VORBIS_160))
+            .or(track.files.get_key_value(&FileFormat::OGG_VORBIS_96))
         {
-            Some(format) => format,
+            Some(format) => {
+                println!("    using {:?}", format.0);
+                format.1
+            }
             None => {
                 println!("    no suitable format found, skipping");
                 continue;
@@ -160,6 +163,8 @@ async fn main() {
 
         let mut track_buffer = Vec::<u8>::new();
         let mut track_buffer_decrypted = Vec::<u8>::new();
+
+        println!("    getting encrypted audio file");
 
         let mut track_file_audio = match AudioFile::open(&session, *track_file_id, 40, true).await {
             Ok(audio) => audio,
@@ -180,6 +185,8 @@ async fn main() {
             }
         };
 
+        println!("    decrypting audio");
+
         match AudioDecrypt::new(track_file_key, &track_buffer[..])
             .read_to_end(&mut track_buffer_decrypted)
         {
@@ -193,12 +200,14 @@ async fn main() {
             }
         };
 
+        println!("    writing output file");
+
         // TODO: fix this
         let track_filename = format!("{}.ogg", track.name.to_string());
 
         match fs::write(&track_filename, &track_buffer_decrypted[0xa7..]) {
             Ok(_) => {
-                println!("    wrote {}", track_filename);
+                println!("    wrote \"{}\"", track_filename);
             }
             Err(err) => {
                 println!(
