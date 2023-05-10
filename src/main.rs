@@ -179,10 +179,13 @@ async fn main() {
         track_ids.len().to_string().bold()
     );
 
-    'track_loop: for track_id in track_ids {
+    let mut tracks_completed: usize = 0;
+    let mut tracks_existing: usize = 0;
+
+    'track_loop: for track_id in &track_ids {
         print!(" {} ", "->".yellow().bold());
 
-        let track = match Track::get(&session, track_id).await {
+        let track = match Track::get(&session, *track_id).await {
             Ok(track) => {
                 println!("{} ({})", track.name.bold(), track_id.to_base62().unwrap());
                 track
@@ -254,6 +257,7 @@ async fn main() {
                 "note".bright_blue().bold(),
                 track_output_path
             );
+            tracks_existing += 1;
             continue;
         }
 
@@ -387,5 +391,23 @@ async fn main() {
                 continue;
             }
         };
+
+        tracks_completed += 1;
     }
+
+    println!("\n{} Processed tracks: ", "=>".green().bold(),);
+
+    println!(
+        " {} {} error",
+        "->".yellow().bold(),
+        track_ids.len() - tracks_completed - tracks_existing
+    );
+
+    println!(
+        " {} {} already downloaded",
+        "->".yellow().bold(),
+        tracks_existing
+    );
+
+    println!(" {} {} total", "->".yellow().bold(), track_ids.len())
 }
