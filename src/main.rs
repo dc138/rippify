@@ -7,8 +7,18 @@ use debug_print::debug_println as dprintln;
 use getopts::Options;
 use lazy_regex::regex;
 use librespot_metadata::{Album, Artist, FileFormat, Metadata, Playlist, Track};
-use std::{collections::HashSet, env, fs, io::Read, path::Path, process::exit};
-use tokio::fs::create_dir_all;
+use oggvorbismeta::{replace_comment_header, CommentHeader, VorbisComments};
+use std::{
+    collections::HashSet,
+    env,
+    io::{Cursor, Read},
+    path::Path,
+    process::exit,
+};
+use tokio::{
+    fs::{create_dir_all, File},
+    io::copy,
+};
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [OPTIONS] URIs...", program);
@@ -23,19 +33,21 @@ async fn main() {
     let mut opts = Options::new();
 
     opts.optflag("h", "help", "print the help menu");
+
     opts.optopt("u", "user", "user login name, required", "USER");
     opts.optopt("p", "pass", "user password, required", "PASS");
     opts.optopt(
         "f",
         "format",
-        "output format to use. {author}/{album}/{name}.{ext} is used by default. Available format specifiers are: {author}, {album}, {name} and {ext}",
+        "output format to use. {author}/{album}/{name}.{ext} is used by default. Available format specifiers are: {author}, {album}, {name} and {ext}. Note that when tracks have more that one author, {author} will evaluate only to main one (track metadata will still we written correctly).",
         "FMT",
     );
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
-            panic!("{}", f.to_string())
+            println!("error: {}", f.to_string());
+            exit(1);
         }
     };
 
@@ -142,7 +154,7 @@ async fn main() {
 
     println!("Parsed {} tracks:", track_ids.len());
 
-    for track_id in track_ids {
+    'track_loop: for track_id in track_ids {
         println!("  track: {}", track_id.to_base62().unwrap());
 
         let track = Track::get(&session, track_id).await.unwrap();
@@ -152,14 +164,25 @@ async fn main() {
             continue;
         }
 
-        let track_first_artist =
-            match Artist::get(&session, *track.artists.iter().next().unwrap()).await {
+        let mut track_artists = Vec::<Artist>::with_capacity(track.artists.len());
+        for artist_id in &track.artists {
+            track_artists.push(match Artist::get(&session, *artist_id).await {
                 Ok(artist) => artist,
                 Err(err) => {
-                    println!("    cannot get artist for track: {:?}, skipping...", err);
-                    continue;
+                    println!(
+                        "    cannot get artist {} for track: {:?}, skipping...",
+                        artist_id.to_base62().unwrap(),
+                        err
+                    );
+                    continue 'track_loop;
                 }
-            };
+            });
+        }
+
+        if track_artists.len() == 0 {
+            println!("    cannot get artists for track, skipping...");
+            continue;
+        }
 
         let track_album = match Album::get(&session, track.album).await {
             Ok(album) => album,
@@ -171,10 +194,10 @@ async fn main() {
 
         let track_output_path = output_format
             .clone()
-            .replace("{author}", &track_first_artist.name)
+            .replace("{author}", &track_artists.iter().next().unwrap().name) // NOTE: using the first found artist as the "main" artist
             .replace("{album}", &track_album.name)
-            .replace("{name}", track.name.as_str())
-            .replace("{ext}", "ogg"); // TODO: change this
+            .replace("{name}", &track.name.as_str().replace("/", " "))
+            .replace("{ext}", "ogg");
 
         if Path::new(&track_output_path).exists() {
             println!(
@@ -265,9 +288,26 @@ async fn main() {
             }
         };
 
+        println!("    writing tags");
+
+        let track_file_cursor = Cursor::new(&track_buffer_decrypted[0xa7..]);
+        let mut track_comments = CommentHeader::new();
+
+        track_comments.set_vendor("Ogg");
+
+        track_comments.add_tag_single("title", &track.name);
+        track_comments.add_tag_single("album", &track_album.name);
+
+        track_artists
+            .iter()
+            .for_each(|artist| track_comments.add_tag_single("artist", &artist.name));
+
+        let mut track_file_out = replace_comment_header(track_file_cursor, track_comments);
+
         println!("    writing output file");
 
-        match fs::write(&track_output_path, &track_buffer_decrypted[0xa7..]) {
+        let mut track_file_write = File::create(&track_output_path).await.unwrap();
+        match copy(&mut track_file_out, &mut track_file_write).await {
             Ok(_) => {
                 println!("    wrote \"{}\"", track_output_path);
             }
