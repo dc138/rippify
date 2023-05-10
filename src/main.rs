@@ -56,7 +56,7 @@ async fn main() {
     if matches.opt_present("h")
         || !matches.opt_present("u")
         || !matches.opt_present("p")
-        || input.len() == 0
+        || input.is_empty()
     {
         print_usage(&program, opts);
         return;
@@ -79,9 +79,8 @@ async fn main() {
     let session = match Session::connect(session_config, credentials, None, false).await {
         Ok(session) => {
             println!(
-                "{} {} {}",
+                "{} Logged in as: {}",
                 "=>".green().bold(),
-                "Logged in as:",
                 &user.bright_blue()
             );
             session.0
@@ -108,16 +107,16 @@ async fn main() {
     println!("\n{} Input resources:", "=>".green().bold());
 
     for line in &input {
-        if let Some(captures) = track_uri.captures(&line).or(track_url.captures(&line)) {
+        if let Some(captures) = track_uri.captures(line).or(track_url.captures(line)) {
             let id_str = captures.iter().last().unwrap().unwrap().as_str();
-            let id = SpotifyId::from_base62(&id_str).unwrap();
+            let id = SpotifyId::from_base62(id_str).unwrap();
 
             println!(" {} track: {}", "->".yellow().bold(), &id_str);
 
             track_ids.insert(id);
-        } else if let Some(captures) = pl_uri.captures(&line).or(pl_url.captures(&line)) {
+        } else if let Some(captures) = pl_uri.captures(line).or(pl_url.captures(line)) {
             let id_str = captures.iter().last().unwrap().unwrap().as_str();
-            let id = SpotifyId::from_base62(&id_str).unwrap();
+            let id = SpotifyId::from_base62(id_str).unwrap();
 
             println!(" {} playlist: {}", "->".yellow().bold(), &id_str);
 
@@ -136,9 +135,9 @@ async fn main() {
             for track in playlist.tracks {
                 track_ids.insert(track);
             }
-        } else if let Some(captures) = album_uri.captures(&line).or(album_url.captures(&line)) {
+        } else if let Some(captures) = album_uri.captures(line).or(album_url.captures(line)) {
             let id_str = captures.iter().last().unwrap().unwrap().as_str();
-            let id = SpotifyId::from_base62(&id_str).unwrap();
+            let id = SpotifyId::from_base62(id_str).unwrap();
 
             println!(" {} album: {}", "->".yellow().bold(), &id_str);
 
@@ -166,7 +165,7 @@ async fn main() {
         }
     }
 
-    if track_ids.len() == 0 {
+    if track_ids.is_empty() {
         println!(
             "\n{}: didn't get any tracks, aborting...",
             "error".red().bold()
@@ -222,7 +221,7 @@ async fn main() {
             });
         }
 
-        if track_artists.len() == 0 {
+        if track_artists.is_empty() {
             println!(
                 "   - {}: cannot get artists for track, skipping...",
                 "warning".yellow().bold()
@@ -244,9 +243,9 @@ async fn main() {
 
         let track_output_path = output_format
             .clone()
-            .replace("{author}", &track_artists.iter().next().unwrap().name) // NOTE: using the first found artist as the "main" artist
+            .replace("{author}", &track_artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
             .replace("{album}", &track_album.name)
-            .replace("{name}", &track.name.as_str().replace("/", " "))
+            .replace("{name}", &track.name.as_str().replace('/', " "))
             .replace("{ext}", "ogg");
 
         if Path::new(&track_output_path).exists() {
@@ -335,7 +334,7 @@ async fn main() {
                 println!(
                     "   - {}: cannot get track file audio: {}, skipping",
                     "warning".yellow().bold(),
-                    err.to_string()
+                    err
                 );
                 continue;
             }
@@ -351,7 +350,7 @@ async fn main() {
                 println!(
                     "   - {}: cannot decrypt audio file: {}, skipping",
                     "warning".yellow().bold(),
-                    err.to_string()
+                    err
                 );
                 continue;
             }
@@ -383,7 +382,7 @@ async fn main() {
                     "   - {}: cannot write {}: {}, skipping...",
                     "warning".yellow().bold(),
                     track_output_path,
-                    err.to_string()
+                    err
                 );
                 continue;
             }
