@@ -433,10 +433,7 @@ async fn get_track(session: &Session, id: SpotifyId) -> Option<Track> {
         if track.available {
             return Some(track);
         } else {
-            track
-                .alternatives
-                .iter()
-                .for_each(|i| track_ids.push_back(*i));
+            track_ids.extend(track.alternatives);
         }
     }
 
