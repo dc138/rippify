@@ -9,7 +9,7 @@ use lazy_regex::regex;
 use librespot_metadata::{Album, Artist, FileFormat, Metadata, Playlist, Track};
 use oggvorbismeta::{replace_comment_header, CommentHeader, VorbisComments};
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     env,
     io::{Cursor, Read},
     path::Path,
@@ -19,11 +19,6 @@ use tokio::{
     fs::{create_dir_all, File},
     io::copy,
 };
-
-fn print_usage(program: &str, opts: Options) {
-    let brief = format!("Usage: {} [OPTIONS] URIs...", program);
-    print!("{}", opts.usage(&brief));
-}
 
 #[tokio::main]
 async fn main() {
@@ -185,12 +180,22 @@ async fn main() {
     'track_loop: for track_id in &track_ids {
         print!(" {} ", "->".yellow().bold());
 
-        let track = match Track::get(&session, *track_id).await {
-            Ok(track) => {
-                println!("{} ({})", track.name.bold(), track_id.to_base62().unwrap());
+        let track = match get_track(&session, *track_id).await {
+            Some(track) => {
+                if track.id.to_base62().unwrap() != track_id.to_base62().unwrap() {
+                    println!(
+                        "{} ({} alt. {})",
+                        track.name.bold(),
+                        track.id.to_base62().unwrap(),
+                        track_id.to_base62().unwrap()
+                    );
+                } else {
+                    println!("{} ({})", track.name.bold(), track.id.to_base62().unwrap());
+                }
+
                 track
             }
-            Err(_) => {
+            None => {
                 println!("{} ({})", "??".bold(), track_id.to_base62().unwrap());
                 println!(
                     "   - {}: cannot get track from id, skipping...",
@@ -199,14 +204,6 @@ async fn main() {
                 continue;
             }
         };
-
-        if !track.available {
-            println!(
-                "   - {}: unavailable, skipping...",
-                "warning".yellow().bold()
-            );
-            continue;
-        }
 
         let mut track_artists = Vec::<Artist>::with_capacity(track.artists.len());
         for artist_id in &track.artists {
@@ -409,5 +406,39 @@ async fn main() {
         tracks_existing
     );
 
-    println!(" {} {} total", "->".yellow().bold(), track_ids.len())
+    println!(" {} {} new", "->".yellow().bold(), tracks_completed);
+
+    println!(
+        " {} {} total processed",
+        "->".yellow().bold(),
+        track_ids.len()
+    )
+}
+
+fn print_usage(program: &str, opts: Options) {
+    let brief = format!("Usage: {} [OPTIONS] URIs...", program);
+    print!("{}", opts.usage(&brief));
+}
+
+async fn get_track(session: &Session, id: SpotifyId) -> Option<Track> {
+    let mut track_ids = VecDeque::<SpotifyId>::new();
+    track_ids.push_back(id);
+
+    while let Some(id) = track_ids.pop_front() {
+        let track = match Track::get(session, id).await {
+            Ok(track) => track,
+            Err(_) => continue,
+        };
+
+        if track.available {
+            return Some(track);
+        } else {
+            track
+                .alternatives
+                .iter()
+                .for_each(|i| track_ids.push_back(*i));
+        }
+    }
+
+    None
 }
