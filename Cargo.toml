@@ -13,9 +13,9 @@ readme = "README.md"
 getopts = "0.2"
 debug_print = "1.0.0"
 tokio = { version = "1.28.0", features = ["full"] }
-librespot-core = "0.4.2"
-librespot-metadata = "0.4.2"
-librespot-audio = "0.4.2"
+librespot-core = { git = "https://github.com/librespot-org/librespot.git", branch = "dev" }
+librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", branch = "dev" }
+librespot-audio = { git = "https://github.com/librespot-org/librespot.git", branch = "dev" }
 lazy-regex = "2.5.0"
 oggvorbismeta = "0.1.0"
 colored = "2.0.0"
