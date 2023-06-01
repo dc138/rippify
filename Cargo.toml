@@ -16,6 +16,6 @@ tokio = { version = "1.28.0", features = ["full"] }
 librespot-core = { git = "https://github.com/librespot-org/librespot.git", rev = "c964102" }
 librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", rev = "c964102" }
 librespot-audio = { git = "https://github.com/librespot-org/librespot.git", rev = "c964102" }
-lazy-regex = "2.5.0"
 oggvorbismeta = "0.1.0"
 colored = "2.0.0"
+regex = "1.8.3"

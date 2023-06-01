@@ -6,9 +6,9 @@ use librespot_core::{
 };
 
 use getopts::Options;
-use lazy_regex::regex;
 use librespot_metadata::{audio::AudioFileFormat, Album, Metadata, Playlist, Track};
 use oggvorbismeta::{replace_comment_header, CommentHeader, VorbisComments};
+use regex::Regex;
 use std::{
     collections::{HashSet, VecDeque},
     env,
@@ -94,65 +94,36 @@ async fn main() {
 
     let mut track_ids: HashSet<SpotifyId> = HashSet::new();
 
-    let track_uri = regex!(r"^spotify:track:([[:alnum:]]{22})$");
-    let track_url = regex!(r"^(http(s)?://)?open\.spotify\.com/track/([[:alnum:]]{22})$");
-    let pl_uri = regex!(r"^spotify:playlist:([[:alnum:]]{22})$");
-    let pl_url = regex!(r"^(http(s)?://)?open\.spotify\.com/playlist/([[:alnum:]]{22})$");
-    let album_uri = regex!(r"^spotify:album:([[:alnum:]]{22})$");
-    let album_url = regex!(r"^(http(s)?://)?open\.spotify\.com/album/([[:alnum:]]{22})$");
-
     println!("\n{} Input resources:", "=>".green().bold());
 
     for line in &input {
-        if let Some(captures) = track_uri.captures(line).or(track_url.captures(line)) {
-            let id_str = captures.iter().last().unwrap().unwrap().as_str();
-            let id = SpotifyId::from_base62(id_str).unwrap();
-
+        if let Some((id, id_str)) = get_resource_from_line(line, "track") {
             println!(" {} track: {}", "->".yellow().bold(), &id_str);
-
             track_ids.insert(id);
-        } else if let Some(captures) = pl_uri.captures(line).or(pl_url.captures(line)) {
-            let id_str = captures.iter().last().unwrap().unwrap().as_str();
-            let id = SpotifyId::from_base62(id_str).unwrap();
-
+            //
+        } else if let Some((id, id_str)) = get_resource_from_line(line, "playlist") {
             println!(" {} playlist: {}", "->".yellow().bold(), &id_str);
 
-            let playlist = match Playlist::get(&session, &id).await {
-                Ok(playlist) => playlist,
-                Err(err) => {
-                    println!(
-                        "{}: cannot get playlist metadata: {:?}, skipping...",
-                        "warning".yellow(),
-                        err
-                    );
-                    continue;
-                }
-            };
-
-            for track in playlist.tracks() {
-                track_ids.insert(track.to_owned());
+            if let Err(err) = get_playlist_from_id(&session, &id, &mut track_ids).await {
+                println!(
+                    "{}: cannot get playlist metadata: {}, skipping...",
+                    "warning".yellow().bold(),
+                    err
+                );
+                continue;
             }
-        } else if let Some(captures) = album_uri.captures(line).or(album_url.captures(line)) {
-            let id_str = captures.iter().last().unwrap().unwrap().as_str();
-            let id = SpotifyId::from_base62(id_str).unwrap();
-
+        //
+        } else if let Some((id, id_str)) = get_resource_from_line(line, "album") {
             println!(" {} album: {}", "->".yellow().bold(), &id_str);
 
-            let album = match Album::get(&session, &id).await {
-                Ok(album) => album,
-                Err(err) => {
-                    println!(
-                        "{}: cannot get album metadata: {:?}, skipping...",
-                        "warning".yellow(),
-                        err
-                    );
-                    continue;
-                }
-            };
-
-            for track in album.tracks() {
-                track_ids.insert(track.to_owned());
+            if let Err(err) = get_album_from_id(&session, &id, &mut track_ids).await {
+                println!(
+                    "{}: cannot get album metadata: {}, skipping...",
+                    "warning".yellow().bold(),
+                    err
+                );
             }
+        //
         } else {
             println!(
                 "{}: unrecognized input: {}, skipping...",
@@ -182,7 +153,7 @@ async fn main() {
     for track_id in &track_ids {
         print!(" {} ", "->".yellow().bold());
 
-        let (track, track_file_id) = match get_track(&session, track_id).await {
+        let (track, track_file_id) = match get_track_from_id(&session, track_id).await {
             Ok((track, file_id)) => {
                 if track.id.to_base62().unwrap() != track_id.to_base62().unwrap() {
                     println!(
@@ -369,7 +340,7 @@ fn print_usage(program: &str, opts: Options) {
     print!("{}", opts.usage(&brief));
 }
 
-async fn get_track(session: &Session, id: &SpotifyId) -> Result<(Track, FileId), Error> {
+async fn get_track_from_id(session: &Session, id: &SpotifyId) -> Result<(Track, FileId), Error> {
     let mut track_ids = VecDeque::<SpotifyId>::new();
     track_ids.push_back(id.to_owned());
 
@@ -391,4 +362,57 @@ async fn get_track(session: &Session, id: &SpotifyId) -> Result<(Track, FileId),
     }
 
     Err(Error::internal("cannot find a suitable track"))
+}
+
+async fn get_playlist_from_id(
+    session: &Session,
+    id: &SpotifyId,
+    existing_tracks: &mut HashSet<SpotifyId>,
+) -> Result<(), Error> {
+    let playlist = match Playlist::get(&session, &id).await {
+        Ok(playlist) => playlist,
+        Err(err) => return Err(err),
+    };
+
+    for track in playlist.tracks() {
+        existing_tracks.insert(track.to_owned());
+    }
+
+    Ok(())
+}
+
+async fn get_album_from_id(
+    session: &Session,
+    id: &SpotifyId,
+    existing_tracks: &mut HashSet<SpotifyId>,
+) -> Result<(), Error> {
+    let album = match Album::get(&session, &id).await {
+        Ok(album) => album,
+        Err(err) => return Err(err),
+    };
+
+    for track in album.tracks() {
+        existing_tracks.insert(track.to_owned());
+    }
+
+    Ok(())
+}
+
+fn get_resource_from_line<'a>(line: &'a str, name: &str) -> Option<(SpotifyId, &'a str)> {
+    let resource_uri = Regex::new(&format!(r"^spotify:{}:([[:alnum:]]{{22}})$", name)).unwrap();
+    let resource_url = Regex::new(&format!(
+        r"^(http(s)?://)?open\.spotify\.com/{}/([[:alnum:]]{{22}})$",
+        name
+    ))
+    .unwrap();
+
+    if let Some(captures) = resource_uri.captures(line).or(resource_url.captures(line)) {
+        let id_str = captures.iter().last().unwrap().unwrap().as_str();
+        let id = SpotifyId::from_base62(id_str).unwrap();
+
+        Some((id, id_str))
+    //
+    } else {
+        None
+    }
 }
