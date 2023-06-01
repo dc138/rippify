@@ -6,7 +6,7 @@ use librespot_core::{
 };
 
 use getopts::Options;
-use librespot_metadata::{audio::AudioFileFormat, Album, Metadata, Playlist, Track};
+use librespot_metadata::{audio::AudioFileFormat, Album, Artist, Metadata, Playlist, Track};
 use oggvorbismeta::{replace_comment_header, CommentHeader, VorbisComments};
 use regex::Regex;
 use std::{
@@ -124,6 +124,16 @@ async fn main() {
                 );
             }
         //
+        } else if let Some((id, id_str)) = get_resource_from_line(line, "artist") {
+            println!(" {} artist: {}", "->".yellow().bold(), &id_str);
+
+            if let Err(err) = get_artist_from_id(&session, &id, &mut track_ids).await {
+                println!(
+                    "{}: cannot get artist metadata: {}, skipping...",
+                    "warning".yellow().bold(),
+                    err
+                );
+            }
         } else {
             println!(
                 "{}: unrecognized input: {}, skipping...",
@@ -393,6 +403,31 @@ async fn get_album_from_id(
 
     for track in album.tracks() {
         existing_tracks.insert(track.to_owned());
+    }
+
+    Ok(())
+}
+
+async fn get_artist_from_id(
+    session: &Session,
+    id: &SpotifyId,
+    existing_tracks: &mut HashSet<SpotifyId>,
+) -> Result<(), Error> {
+    let artist = match Artist::get(&session, &id).await {
+        Ok(album) => album,
+        Err(err) => return Err(err),
+    };
+
+    for album_group in artist.albums.0 {
+        for album in album_group.0 .0 {
+            get_album_from_id(session, &album, existing_tracks).await?;
+        }
+    }
+
+    for album_group in artist.singles.0 {
+        for album in album_group.0 .0 {
+            get_album_from_id(session, &album, existing_tracks).await?;
+        }
     }
 
     Ok(())
