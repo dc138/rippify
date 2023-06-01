@@ -2,11 +2,12 @@ use colored::Colorize;
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_core::{
     authentication::Credentials, config::SessionConfig, session::Session, spotify_id::SpotifyId,
+    Error, FileId,
 };
 
 use getopts::Options;
 use lazy_regex::regex;
-use librespot_metadata::{Album, Artist, FileFormat, Metadata, Playlist, Track};
+use librespot_metadata::{audio::AudioFileFormat, Album, Metadata, Playlist, Track};
 use oggvorbismeta::{replace_comment_header, CommentHeader, VorbisComments};
 use std::{
     collections::{HashSet, VecDeque},
@@ -71,14 +72,15 @@ async fn main() {
     let credentials = Credentials::with_password(&user, &pass);
     let session_config = SessionConfig::default();
 
-    let session = match Session::connect(session_config, credentials, None, false).await {
-        Ok(session) => {
+    let session = Session::new(session_config, None);
+
+    match session.connect(credentials, false).await {
+        Ok(_) => {
             println!(
                 "{} Logged in as: {}",
                 "=>".green().bold(),
                 &user.bright_blue()
             );
-            session.0
         }
         Err(err) => {
             println!(
@@ -115,7 +117,7 @@ async fn main() {
 
             println!(" {} playlist: {}", "->".yellow().bold(), &id_str);
 
-            let playlist = match Playlist::get(&session, id).await {
+            let playlist = match Playlist::get(&session, &id).await {
                 Ok(playlist) => playlist,
                 Err(err) => {
                     println!(
@@ -127,8 +129,8 @@ async fn main() {
                 }
             };
 
-            for track in playlist.tracks {
-                track_ids.insert(track);
+            for track in playlist.tracks() {
+                track_ids.insert(track.to_owned());
             }
         } else if let Some(captures) = album_uri.captures(line).or(album_url.captures(line)) {
             let id_str = captures.iter().last().unwrap().unwrap().as_str();
@@ -136,7 +138,7 @@ async fn main() {
 
             println!(" {} album: {}", "->".yellow().bold(), &id_str);
 
-            let album = match Album::get(&session, id).await {
+            let album = match Album::get(&session, &id).await {
                 Ok(album) => album,
                 Err(err) => {
                     println!(
@@ -148,8 +150,8 @@ async fn main() {
                 }
             };
 
-            for track in album.tracks {
-                track_ids.insert(track);
+            for track in album.tracks() {
+                track_ids.insert(track.to_owned());
             }
         } else {
             println!(
@@ -177,11 +179,11 @@ async fn main() {
     let mut tracks_completed: usize = 0;
     let mut tracks_existing: usize = 0;
 
-    'track_loop: for track_id in &track_ids {
+    for track_id in &track_ids {
         print!(" {} ", "->".yellow().bold());
 
-        let track = match get_track(&session, *track_id).await {
-            Some(track) => {
+        let (track, track_file_id) = match get_track(&session, track_id).await {
+            Ok((track, file_id)) => {
                 if track.id.to_base62().unwrap() != track_id.to_base62().unwrap() {
                     println!(
                         "{} ({} alt. {})",
@@ -193,49 +195,14 @@ async fn main() {
                     println!("{} ({})", track.name.bold(), track.id.to_base62().unwrap());
                 }
 
-                track
+                (track, file_id)
             }
-            None => {
+            Err(e) => {
                 println!("{} ({})", "??".bold(), track_id.to_base62().unwrap());
                 println!(
-                    "   - {}: cannot get track from id, skipping...",
+                    "   - {}: cannot get track from id: {}, skipping...",
                     "warning".yellow().bold(),
-                );
-                continue;
-            }
-        };
-
-        let mut track_artists = Vec::<Artist>::with_capacity(track.artists.len());
-        for artist_id in &track.artists {
-            track_artists.push(match Artist::get(&session, *artist_id).await {
-                Ok(artist) => artist,
-                Err(err) => {
-                    println!(
-                        "   - {}: cannot get artist {} for track: {:?}, skipping...",
-                        "warning".yellow().bold(),
-                        artist_id.to_base62().unwrap(),
-                        err
-                    );
-                    continue 'track_loop;
-                }
-            });
-        }
-
-        if track_artists.is_empty() {
-            println!(
-                "   - {}: cannot get artists for track, skipping...",
-                "warning".yellow().bold()
-            );
-            continue;
-        }
-
-        let track_album = match Album::get(&session, track.album).await {
-            Ok(album) => album,
-            Err(err) => {
-                println!(
-                    "   - {}: cannot get artist for song: {:?}",
-                    "warning".yellow().bold(),
-                    err
+                    e,
                 );
                 continue;
             }
@@ -243,8 +210,8 @@ async fn main() {
 
         let track_output_path = output_format
             .clone()
-            .replace("{author}", &track_artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
-            .replace("{album}", &track_album.name)
+            .replace("{author}", &track.artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
+            .replace("{album}", &track.album.name)
             .replace("{name}", &track.name.as_str().replace('/', " "))
             .replace("{ext}", "ogg");
 
@@ -281,26 +248,7 @@ async fn main() {
             exit(1);
         }
 
-        let track_file_id = match track
-            .files
-            .get_key_value(&FileFormat::OGG_VORBIS_320)
-            .or(track.files.get_key_value(&FileFormat::OGG_VORBIS_160))
-            .or(track.files.get_key_value(&FileFormat::OGG_VORBIS_96))
-        {
-            Some(format) => {
-                println!("   - using {:?}", format.0);
-                format.1
-            }
-            None => {
-                println!(
-                    "   - {}: no suitable format found, skipping",
-                    "warning".yellow().bold()
-                );
-                continue;
-            }
-        };
-
-        let track_file_key = match session.audio_key().request(track.id, *track_file_id).await {
+        let track_file_key = match session.audio_key().request(track.id, track_file_id).await {
             Ok(key) => key,
             Err(err) => {
                 println!(
@@ -317,7 +265,7 @@ async fn main() {
 
         println!("   - getting encrypted audio file");
 
-        let mut track_file_audio = match AudioFile::open(&session, *track_file_id, 40, true).await {
+        let mut track_file_audio = match AudioFile::open(&session, track_file_id, 40).await {
             Ok(audio) => audio,
             Err(err) => {
                 println!(
@@ -343,7 +291,7 @@ async fn main() {
 
         println!("   - decrypting audio");
 
-        match AudioDecrypt::new(track_file_key, &track_buffer[..])
+        match AudioDecrypt::new(Some(track_file_key), &track_buffer[..])
             .read_to_end(&mut track_buffer_decrypted)
         {
             Ok(_) => {}
@@ -365,9 +313,10 @@ async fn main() {
         track_comments.set_vendor("Ogg");
 
         track_comments.add_tag_single("title", &track.name);
-        track_comments.add_tag_single("album", &track_album.name);
+        track_comments.add_tag_single("album", &track.album.name);
 
-        track_artists
+        track
+            .artists
             .iter()
             .for_each(|artist| track_comments.add_tag_single("artist", &artist.name));
 
@@ -420,22 +369,26 @@ fn print_usage(program: &str, opts: Options) {
     print!("{}", opts.usage(&brief));
 }
 
-async fn get_track(session: &Session, id: SpotifyId) -> Option<Track> {
+async fn get_track(session: &Session, id: &SpotifyId) -> Result<(Track, FileId), Error> {
     let mut track_ids = VecDeque::<SpotifyId>::new();
-    track_ids.push_back(id);
+    track_ids.push_back(id.to_owned());
 
     while let Some(id) = track_ids.pop_front() {
-        let track = match Track::get(session, id).await {
+        let track = match Track::get(session, &id).await {
             Ok(track) => track,
-            Err(_) => continue,
+            Err(e) => return Err(e),
         };
 
-        if track.available {
-            return Some(track);
-        } else {
-            track_ids.extend(track.alternatives);
-        }
+        match track
+            .files
+            .get_key_value(&AudioFileFormat::OGG_VORBIS_320)
+            .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_160))
+            .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_96))
+        {
+            Some(format) => return Ok((track.to_owned(), format.1.to_owned())),
+            None => track_ids.extend(track.alternatives.0),
+        };
     }
 
-    None
+    Err(Error::internal("cannot find a suitable track"))
 }
