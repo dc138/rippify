@@ -5,7 +5,7 @@ use librespot_core::{
     Error, FileId,
 };
 
-use getopts::Options;
+use getopts::{Fail, Options};
 use librespot_metadata::{audio::AudioFileFormat, Album, Artist, Metadata, Playlist, Track};
 use oggvorbismeta::{replace_comment_header, CommentHeader, VorbisComments};
 use regex::Regex;
@@ -23,53 +23,15 @@ use tokio::{
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-    let program = args[0].clone();
-
-    let mut opts = Options::new();
-
-    opts.optflag("h", "help", "print the help menu");
-
-    opts.optopt("u", "user", "user login name, required", "USER");
-    opts.optopt("p", "pass", "user password, required", "PASS");
-    opts.optopt(
-        "f",
-        "format",
-        "output format to use. {author}/{album}/{name}.{ext} is used by default. Available format specifiers are: {author}, {album}, {name} and {ext}. Note that when tracks have more that one author, {author} will evaluate only to main one (track metadata will still we written correctly).",
-        "FMT",
-    );
-
-    let matches = match opts.parse(&args[1..]) {
-        Ok(m) => m,
-        Err(f) => {
-            println!("{}: {}", "error".red().bold(), f.to_string().bold());
+    let opts = match parse_opts() {
+        Ok(opts) => opts,
+        Err(err) => {
+            println!("{}: {}", "error".red().bold(), err.to_string().bold());
             exit(1);
         }
     };
 
-    let input = matches.free.clone();
-
-    if matches.opt_present("h")
-        || !matches.opt_present("u")
-        || !matches.opt_present("p")
-        || input.is_empty()
-    {
-        print_usage(&program, opts);
-        return;
-    }
-
-    let default_format: String = "{author}/{album}/{name}.{ext}".to_owned();
-
-    let output_format = if let Some(format) = matches.opt_str("f") {
-        format
-    } else {
-        default_format
-    };
-
-    let user = matches.opt_str("u").unwrap();
-    let pass = matches.opt_str("p").unwrap();
-
-    let credentials = Credentials::with_password(&user, &pass);
+    let credentials = Credentials::with_password(&opts.user, &opts.pass);
     let session_config = SessionConfig::default();
 
     let session = Session::new(session_config, None);
@@ -79,7 +41,7 @@ async fn main() {
             println!(
                 "{} Logged in as: {}",
                 "=>".green().bold(),
-                &user.bright_blue()
+                &opts.user.bright_blue()
             );
         }
         Err(err) => {
@@ -96,7 +58,7 @@ async fn main() {
 
     println!("\n{} Input resources:", "=>".green().bold());
 
-    for line in &input {
+    for line in &opts.input {
         if let Some((id, id_str)) = get_resource_from_line(line, "track") {
             println!(" {} track: {}", "->".yellow().bold(), &id_str);
             track_ids.insert(id);
@@ -189,7 +151,8 @@ async fn main() {
             }
         };
 
-        let track_output_path = output_format
+        let track_output_path = opts
+            .format
             .clone()
             .replace("{author}", &track.artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
             .replace("{album}", &track.album.name)
@@ -212,7 +175,7 @@ async fn main() {
                 println!(
                     "{}: invalid format string {}, aborting...",
                     "error".red().bold(),
-                    output_format.bold()
+                    opts.format.bold()
                 );
                 exit(1);
             }
@@ -343,6 +306,59 @@ async fn main() {
         "->".yellow().bold(),
         track_ids.len()
     )
+}
+
+struct UserParams {
+    user: String,
+    pass: String,
+    format: String,
+    input: Vec<String>,
+}
+
+fn parse_opts() -> Result<UserParams, Fail> {
+    let args: Vec<String> = env::args().collect();
+    let program = args[0].clone();
+
+    let mut opts = Options::new();
+
+    opts.optflag("h", "help", "print the help menu");
+
+    opts.optopt("u", "user", "user login name, required", "USER");
+    opts.optopt("p", "pass", "user password, required", "PASS");
+    opts.optopt(
+        "f",
+        "format",
+        "output format to use. {author}/{album}/{name}.{ext} is used by default. Available format specifiers are: {author}, {album}, {name} and {ext}. Note that when tracks have more that one author, {author} will evaluate only to main one (track metadata will still we written correctly).",
+        "FMT",
+    );
+
+    let matches = opts.parse(&args[1..])?;
+    let input = matches.free.clone();
+
+    if matches.opt_present("h")
+        || !matches.opt_present("u")
+        || !matches.opt_present("p")
+        || input.is_empty()
+    {
+        print_usage(&program, opts);
+        exit(0);
+    }
+
+    let format = if let Some(format) = matches.opt_str("f") {
+        format
+    } else {
+        "{author}/{album}/{name}.{ext}".to_owned()
+    };
+
+    let user = matches.opt_str("u").unwrap();
+    let pass = matches.opt_str("p").unwrap();
+
+    Ok(UserParams {
+        user,
+        pass,
+        format,
+        input,
+    })
 }
 
 fn print_usage(program: &str, opts: Options) {
