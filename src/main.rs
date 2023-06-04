@@ -371,10 +371,7 @@ async fn get_track_from_id(session: &Session, id: &SpotifyId) -> Result<(Track, 
     track_ids.push_back(id.to_owned());
 
     while let Some(id) = track_ids.pop_front() {
-        let track = match Track::get(session, &id).await {
-            Ok(track) => track,
-            Err(e) => return Err(e),
-        };
+        let track = Track::get(session, &id).await?;
 
         match track
             .files
@@ -395,10 +392,7 @@ async fn get_playlist_from_id(
     id: &SpotifyId,
     existing_tracks: &mut HashSet<SpotifyId>,
 ) -> Result<(), Error> {
-    let playlist = match Playlist::get(&session, &id).await {
-        Ok(playlist) => playlist,
-        Err(err) => return Err(err),
-    };
+    let playlist = Playlist::get(&session, &id).await?;
 
     for track in playlist.tracks() {
         existing_tracks.insert(track.to_owned());
@@ -412,10 +406,7 @@ async fn get_album_from_id(
     id: &SpotifyId,
     existing_tracks: &mut HashSet<SpotifyId>,
 ) -> Result<(), Error> {
-    let album = match Album::get(&session, &id).await {
-        Ok(album) => album,
-        Err(err) => return Err(err),
-    };
+    let album = Album::get(&session, &id).await?;
 
     for track in album.tracks() {
         existing_tracks.insert(track.to_owned());
@@ -429,10 +420,7 @@ async fn get_artist_from_id(
     id: &SpotifyId,
     existing_tracks: &mut HashSet<SpotifyId>,
 ) -> Result<(), Error> {
-    let artist = match Artist::get(&session, &id).await {
-        Ok(album) => album,
-        Err(err) => return Err(err),
-    };
+    let artist = Artist::get(&session, &id).await?;
 
     for album_group in artist.albums.0 {
         for album in album_group.0 .0 {
