@@ -399,21 +399,21 @@ impl InputResource {
                 existing_tracks.insert(self.id);
             }
             ResourceKind::Playlist => {
-                let playlist = Playlist::get(&session, &self.id).await?;
+                let playlist = Playlist::get(session, &self.id).await?;
 
                 for track in playlist.tracks() {
                     existing_tracks.insert(track.to_owned());
                 }
             }
             ResourceKind::Album => {
-                let album = Album::get(&session, &self.id).await?;
+                let album = Album::get(session, &self.id).await?;
 
                 for track in album.tracks() {
                     existing_tracks.insert(track.to_owned());
                 }
             }
             ResourceKind::Artist => {
-                let artist = Artist::get(&session, &self.id).await?;
+                let artist = Artist::get(session, &self.id).await?;
 
                 for album_group in artist.albums.0 {
                     for album in album_group.0 .0 {
@@ -443,7 +443,7 @@ impl InputResource {
     }
 }
 
-fn get_resource_from_line<'a>(line: &'a str) -> Result<InputResource, &'a str> {
+fn get_resource_from_line(line: &str) -> Result<InputResource, &str> {
     if let Some(id) = is_resource(line, ResourceKind::Track) {
         Ok(InputResource {
             kind: ResourceKind::Track,
