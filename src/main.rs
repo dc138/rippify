@@ -1,3 +1,4 @@
+use async_recursion::async_recursion;
 use colored::Colorize;
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_core::{
@@ -56,7 +57,7 @@ async fn main() {
 
     println!("\n{} Input resources:", "=>".green().bold());
 
-    let input_resources = opts
+    let input_resources: Vec<_> = opts
         .input
         .iter()
         .map(|line| get_resource_from_line(line))
@@ -73,43 +74,19 @@ async fn main() {
             }
         })
         .map(|x| x.unwrap())
-        .collect::<Vec<_>>();
+        .collect();
 
     let mut track_ids = HashSet::<SpotifyId>::new();
 
     for res in &input_resources {
-        match res.kind {
-            ResourceKind::Track => {
-                track_ids.insert(res.id);
-            }
-            ResourceKind::Playlist => {
-                if let Err(err) = get_playlist_from_id(&session, &res.id, &mut track_ids).await {
-                    println!(
-                        "{}: cannot get playlist metadata: {}, skipping...",
-                        "warning".yellow().bold(),
-                        err
-                    );
-                }
-            }
-            ResourceKind::Album => {
-                if let Err(err) = get_album_from_id(&session, &res.id, &mut track_ids).await {
-                    println!(
-                        "{}: cannot get album metadata: {}, skipping...",
-                        "warning".yellow().bold(),
-                        err
-                    );
-                }
-            }
-            ResourceKind::Artist => {
-                if let Err(err) = get_artist_from_id(&session, &res.id, &mut track_ids).await {
-                    println!(
-                        "{}: cannot get artist metadata: {}, skipping...",
-                        "warning".yellow().bold(),
-                        err
-                    );
-                }
-            }
-        };
+        if let Err(err) = res.get_tracks(&session, &mut track_ids).await {
+            println!(
+                "{}: cannot get {} metadata: {}, skipping...",
+                "warning".yellow().bold(),
+                res.kind,
+                err
+            );
+        }
     }
 
     if track_ids.is_empty() {
@@ -410,6 +387,62 @@ struct InputResource {
     id: SpotifyId,
 }
 
+impl InputResource {
+    #[async_recursion]
+    async fn get_tracks(
+        &self,
+        session: &Session,
+        existing_tracks: &mut HashSet<SpotifyId>,
+    ) -> Result<(), Error> {
+        match self.kind {
+            ResourceKind::Track => {
+                existing_tracks.insert(self.id);
+            }
+            ResourceKind::Playlist => {
+                let playlist = Playlist::get(&session, &self.id).await?;
+
+                for track in playlist.tracks() {
+                    existing_tracks.insert(track.to_owned());
+                }
+            }
+            ResourceKind::Album => {
+                let album = Album::get(&session, &self.id).await?;
+
+                for track in album.tracks() {
+                    existing_tracks.insert(track.to_owned());
+                }
+            }
+            ResourceKind::Artist => {
+                let artist = Artist::get(&session, &self.id).await?;
+
+                for album_group in artist.albums.0 {
+                    for album in album_group.0 .0 {
+                        InputResource {
+                            kind: ResourceKind::Album,
+                            id: album,
+                        }
+                        .get_tracks(session, existing_tracks)
+                        .await?;
+                    }
+                }
+
+                for album_group in artist.singles.0 {
+                    for album in album_group.0 .0 {
+                        InputResource {
+                            kind: ResourceKind::Album,
+                            id: album,
+                        }
+                        .get_tracks(session, existing_tracks)
+                        .await?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 fn get_resource_from_line<'a>(line: &'a str) -> Result<InputResource, &'a str> {
     if let Some(id) = is_resource(line, ResourceKind::Track) {
         Ok(InputResource {
@@ -475,54 +508,4 @@ async fn get_track_from_id(session: &Session, id: &SpotifyId) -> Result<(Track, 
     }
 
     Err(Error::internal("cannot find a suitable track"))
-}
-
-async fn get_playlist_from_id(
-    session: &Session,
-    id: &SpotifyId,
-    existing_tracks: &mut HashSet<SpotifyId>,
-) -> Result<(), Error> {
-    let playlist = Playlist::get(&session, &id).await?;
-
-    for track in playlist.tracks() {
-        existing_tracks.insert(track.to_owned());
-    }
-
-    Ok(())
-}
-
-async fn get_album_from_id(
-    session: &Session,
-    id: &SpotifyId,
-    existing_tracks: &mut HashSet<SpotifyId>,
-) -> Result<(), Error> {
-    let album = Album::get(&session, &id).await?;
-
-    for track in album.tracks() {
-        existing_tracks.insert(track.to_owned());
-    }
-
-    Ok(())
-}
-
-async fn get_artist_from_id(
-    session: &Session,
-    id: &SpotifyId,
-    existing_tracks: &mut HashSet<SpotifyId>,
-) -> Result<(), Error> {
-    let artist = Artist::get(&session, &id).await?;
-
-    for album_group in artist.albums.0 {
-        for album in album_group.0 .0 {
-            get_album_from_id(session, &album, existing_tracks).await?;
-        }
-    }
-
-    for album_group in artist.singles.0 {
-        for album in album_group.0 .0 {
-            get_album_from_id(session, &album, existing_tracks).await?;
-        }
-    }
-
-    Ok(())
 }

@@ -19,3 +19,4 @@ librespot-audio = { git = "https://github.com/librespot-org/librespot.git", rev 
 oggvorbismeta = "0.1.0"
 colored = "2.0.0"
 regex = "1.8.3"
+async-recursion = "1.0.4"
