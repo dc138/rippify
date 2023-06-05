@@ -240,7 +240,7 @@ async fn main() {
 struct UserParams {
     user: String,
     pass: String,
-    format: String,
+    format: OutputFormat,
     input: Vec<String>,
 }
 
@@ -273,10 +273,10 @@ fn parse_opts() -> Result<UserParams, Fail> {
         exit(0);
     }
 
-    let format = if let Some(format) = matches.opt_str("f") {
-        format
-    } else {
-        "{author}/{album}/{name}.{ext}".to_owned()
+    let format = OutputFormat {
+        format_string: matches
+            .opt_str("f")
+            .unwrap_or("{author}/{album}/{name}.{ext}".to_owned()),
     };
 
     let user = matches.opt_str("u").unwrap();
@@ -458,6 +458,39 @@ async fn get_track_from_id(
     ))
 }
 
+struct OutputFormat {
+    format_string: String,
+}
+
+#[derive(Debug)]
+struct OutputFile {
+    dir: Option<String>,
+    file: String,
+}
+
+impl OutputFormat {
+    fn parse_output_format(&self, track: &Track) -> OutputFile {
+        let parsed = self
+            .format_string
+            .replace("{author}", &track.artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
+            .replace("{album}", &track.album.name)
+            .replace("{name}", &track.name.as_str().replace('/', " "))
+            .replace("{ext}", "ogg");
+
+        if let Some(split_pos) = parsed.rfind('/') {
+            OutputFile {
+                dir: Some(parsed[..=split_pos].to_owned()),
+                file: parsed,
+            }
+        } else {
+            OutputFile {
+                dir: None,
+                file: parsed,
+            }
+        }
+    }
+}
+
 struct DownloadTrackError {
     kind: DownloadTrackErrorKind,
     error: Box<dyn std::error::Error>,
@@ -478,43 +511,23 @@ async fn download_track(
     track: &Track,
     file_id: &FileId,
     session: &Session,
-    output_format: &String,
+    output_format: &OutputFormat,
 ) -> Result<String, DownloadTrackError> {
-    let track_output_path = output_format
-        .clone()
-        .replace("{author}", &track.artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
-        .replace("{album}", &track.album.name)
-        .replace("{name}", &track.name.as_str().replace('/', " "))
-        .replace("{ext}", "ogg");
+    let output_file = output_format.parse_output_format(track);
 
-    if Path::new(&track_output_path).exists() {
+    if Path::new(&output_file.file).exists() {
         return Err(DownloadTrackError {
             kind: DownloadTrackErrorKind::FileExists,
-            error: track_output_path.into(),
+            error: output_file.file.into(),
         });
     }
 
-    // TODO: improve this
-    let slice_pos = match track_output_path.rfind('/') {
-        Some(pos) => pos,
-        None => {
-            println!(
-                "{}: invalid format string {}, aborting...",
-                "error".red().bold(),
-                output_format.bold()
-            );
-            exit(1);
-        }
-    };
-
-    let track_folder_path = &track_output_path[..slice_pos + 1];
-
-    create_dir_all(track_folder_path)
-        .await
-        .map_err(|e| DownloadTrackError {
+    if let Some(path) = output_file.dir {
+        create_dir_all(path).await.map_err(|e| DownloadTrackError {
             kind: DownloadTrackErrorKind::FolderPath,
             error: e.into(),
         })?;
+    }
 
     let track_file_key = session
         .audio_key()
@@ -566,7 +579,7 @@ async fn download_track(
     let mut track_file_out = replace_comment_header(track_file_cursor, track_comments);
 
     let mut track_file_write =
-        File::create(&track_output_path)
+        File::create(&output_file.file)
             .await
             .map_err(|e| DownloadTrackError {
                 kind: DownloadTrackErrorKind::FileCreate,
@@ -580,5 +593,5 @@ async fn download_track(
             error: e.into(),
         })?;
 
-    Ok(track_output_path)
+    Ok(output_file.file)
 }
