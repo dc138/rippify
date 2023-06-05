@@ -90,9 +90,10 @@ async fn main() {
             Ok(tracks) => track_ids.extend(tracks),
             Err(err) => {
                 println!(
-                    "{}: cannot get {} metadata: {}, skipping...",
+                    "{}: cannot get metadata for {} {}: {}, skipping...",
                     "warning".yellow().bold(),
                     res.kind,
+                    res.id.to_base62().unwrap(),
                     err
                 );
             }
