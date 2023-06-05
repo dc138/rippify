@@ -3,7 +3,7 @@ use colored::Colorize;
 use librespot_audio::{AudioDecrypt, AudioFile};
 use librespot_core::{
     authentication::Credentials, config::SessionConfig, session::Session, spotify_id::SpotifyId,
-    Error, FileId,
+    FileId,
 };
 
 use getopts::{Fail, Options};
@@ -17,6 +17,7 @@ use std::{
     path::Path,
     process::exit,
 };
+
 use tokio::{
     fs::{create_dir_all, File},
     io::copy,
@@ -146,138 +147,71 @@ async fn main() {
             }
         };
 
-        let track_output_path = opts
-            .format
-            .clone()
-            .replace("{author}", &track.artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
-            .replace("{album}", &track.album.name)
-            .replace("{name}", &track.name.as_str().replace('/', " "))
-            .replace("{ext}", "ogg");
-
-        if Path::new(&track_output_path).exists() {
-            println!(
-                "   - {}: output file \"{}\" already exists, skipping...",
-                "note".bright_blue().bold(),
-                track_output_path
-            );
-            tracks_existing += 1;
-            continue;
+        match download_track(&track, &track_file_id, &session, &opts.format).await {
+            Ok(output) => {
+                println!("   - wrote \"{}\"", output);
+                tracks_completed += 1;
+            }
+            Err(e) => match e.kind {
+                DownloadTrackErrorKind::FileExists => {
+                    println!(
+                        "   - {}: output file \"{}\" already exists, skipping...",
+                        "note".bright_blue().bold(),
+                        e.error
+                    );
+                    tracks_existing += 1;
+                }
+                DownloadTrackErrorKind::FolderPath => {
+                    print!(
+                        "   - {}: cannot create output folders: {}, aborting...",
+                        "warning".yellow().bold(),
+                        e.error
+                    );
+                }
+                DownloadTrackErrorKind::AudioKey => {
+                    println!(
+                        "   - {}: cannot get audio key: {}, skipping",
+                        "warning".yellow().bold(),
+                        e.error
+                    );
+                }
+                DownloadTrackErrorKind::AudioFile => {
+                    println!(
+                        "   - {}: cannot get audio file: {:?}, skipping",
+                        "warning".yellow().bold(),
+                        e.error
+                    );
+                }
+                DownloadTrackErrorKind::TrackFile => {
+                    println!(
+                        "   - {}: cannot get track file audio: {}, skipping",
+                        "warning".yellow().bold(),
+                        e.error
+                    );
+                }
+                DownloadTrackErrorKind::Decrypt => {
+                    println!(
+                        "   - {}: cannot decrypt audio file: {}, skipping",
+                        "warning".yellow().bold(),
+                        e.error
+                    );
+                }
+                DownloadTrackErrorKind::FileCreate => {
+                    println!(
+                        "   - {}: cannot create output file: {}, skipping...",
+                        "warning".yellow().bold(),
+                        e.error
+                    );
+                }
+                DownloadTrackErrorKind::FileWrite => {
+                    println!(
+                        "   - {}: cannot write output file: {}, skipping...",
+                        "warning".yellow().bold(),
+                        e.error
+                    );
+                }
+            },
         }
-
-        let slice_pos = match track_output_path.rfind('/') {
-            Some(pos) => pos,
-            None => {
-                println!(
-                    "{}: invalid format string {}, aborting...",
-                    "error".red().bold(),
-                    opts.format.bold()
-                );
-                exit(1);
-            }
-        };
-
-        let track_folder_path = &track_output_path[..slice_pos + 1];
-
-        if create_dir_all(track_folder_path).await.is_err() {
-            print!(
-                "   - {}: cannot create folders: {}, aborting...",
-                "warning".yellow().bold(),
-                track_folder_path
-            );
-            exit(1);
-        }
-
-        let track_file_key = match session.audio_key().request(track.id, track_file_id).await {
-            Ok(key) => key,
-            Err(err) => {
-                println!(
-                    "   - {}: cannot get audio key: {:?}, skipping",
-                    "warning".yellow().bold(),
-                    err
-                );
-                continue;
-            }
-        };
-
-        let mut track_buffer = Vec::<u8>::new();
-        let mut track_buffer_decrypted = Vec::<u8>::new();
-
-        println!("   - getting encrypted audio file");
-
-        let mut track_file_audio = match AudioFile::open(&session, track_file_id, 40).await {
-            Ok(audio) => audio,
-            Err(err) => {
-                println!(
-                    "   - {}: cannot get audio file: {:?}, skipping",
-                    "warning".yellow().bold(),
-                    err
-                );
-                continue;
-            }
-        };
-
-        match track_file_audio.read_to_end(&mut track_buffer) {
-            Ok(_) => {}
-            Err(err) => {
-                println!(
-                    "   - {}: cannot get track file audio: {}, skipping",
-                    "warning".yellow().bold(),
-                    err
-                );
-                continue;
-            }
-        };
-
-        println!("   - decrypting audio");
-
-        match AudioDecrypt::new(Some(track_file_key), &track_buffer[..])
-            .read_to_end(&mut track_buffer_decrypted)
-        {
-            Ok(_) => {}
-            Err(err) => {
-                println!(
-                    "   - {}: cannot decrypt audio file: {}, skipping",
-                    "warning".yellow().bold(),
-                    err
-                );
-                continue;
-            }
-        };
-
-        println!("   - writing output file");
-
-        let track_file_cursor = Cursor::new(&track_buffer_decrypted[0xa7..]);
-        let mut track_comments = CommentHeader::new();
-
-        track_comments.set_vendor("Ogg");
-
-        track_comments.add_tag_single("title", &track.name);
-        track_comments.add_tag_single("album", &track.album.name);
-
-        track
-            .artists
-            .iter()
-            .for_each(|artist| track_comments.add_tag_single("artist", &artist.name));
-
-        let mut track_file_out = replace_comment_header(track_file_cursor, track_comments);
-
-        let mut track_file_write = File::create(&track_output_path).await.unwrap();
-        match copy(&mut track_file_out, &mut track_file_write).await {
-            Ok(_) => {
-                println!("   - wrote \"{}\"", track_output_path);
-            }
-            Err(err) => {
-                println!(
-                    "   - {}: cannot write {}: {}, skipping...",
-                    "warning".yellow().bold(),
-                    track_output_path,
-                    err
-                );
-                continue;
-            }
-        };
-
-        tracks_completed += 1;
     }
 
     println!("\n{} Processed tracks: ", "=>".green().bold(),);
@@ -400,7 +334,10 @@ struct InputResource {
 
 impl InputResource {
     #[async_recursion]
-    async fn get_tracks(&self, session: &Session) -> Result<Vec<SpotifyId>, Error> {
+    async fn get_tracks(
+        &self,
+        session: &Session,
+    ) -> Result<Vec<SpotifyId>, Box<dyn std::error::Error>> {
         let mut tracks: Vec<SpotifyId> = Vec::new();
 
         match self.kind {
@@ -496,7 +433,10 @@ fn is_resource(line: &str, res: ResourceKind) -> Option<SpotifyId> {
     }
 }
 
-async fn get_track_from_id(session: &Session, id: &SpotifyId) -> Result<(Track, FileId), Error> {
+async fn get_track_from_id(
+    session: &Session,
+    id: &SpotifyId,
+) -> Result<(Track, FileId), librespot_core::error::Error> {
     let mut track_ids = VecDeque::<SpotifyId>::new();
     track_ids.push_back(id.to_owned());
 
@@ -513,5 +453,132 @@ async fn get_track_from_id(session: &Session, id: &SpotifyId) -> Result<(Track, 
         };
     }
 
-    Err(Error::internal("cannot find a suitable track"))
+    Err(librespot_core::error::Error::not_found(
+        "cannot find a suitable track",
+    ))
+}
+
+struct DownloadTrackError {
+    kind: DownloadTrackErrorKind,
+    error: Box<dyn std::error::Error>,
+}
+
+enum DownloadTrackErrorKind {
+    FileExists,
+    FolderPath,
+    AudioKey,
+    AudioFile,
+    TrackFile,
+    Decrypt,
+    FileCreate,
+    FileWrite,
+}
+
+async fn download_track(
+    track: &Track,
+    file_id: &FileId,
+    session: &Session,
+    output_format: &String,
+) -> Result<String, DownloadTrackError> {
+    let track_output_path = output_format
+        .clone()
+        .replace("{author}", &track.artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
+        .replace("{album}", &track.album.name)
+        .replace("{name}", &track.name.as_str().replace('/', " "))
+        .replace("{ext}", "ogg");
+
+    if Path::new(&track_output_path).exists() {
+        return Err(DownloadTrackError {
+            kind: DownloadTrackErrorKind::FileExists,
+            error: track_output_path.into(),
+        });
+    }
+
+    // TODO: improve this
+    let slice_pos = match track_output_path.rfind('/') {
+        Some(pos) => pos,
+        None => {
+            println!(
+                "{}: invalid format string {}, aborting...",
+                "error".red().bold(),
+                output_format.bold()
+            );
+            exit(1);
+        }
+    };
+
+    let track_folder_path = &track_output_path[..slice_pos + 1];
+
+    create_dir_all(track_folder_path)
+        .await
+        .map_err(|e| DownloadTrackError {
+            kind: DownloadTrackErrorKind::FolderPath,
+            error: e.into(),
+        })?;
+
+    let track_file_key = session
+        .audio_key()
+        .request(track.id, *file_id)
+        .await
+        .map_err(|e| DownloadTrackError {
+            kind: DownloadTrackErrorKind::AudioKey,
+            error: e.into(),
+        })?;
+
+    let mut track_buffer = Vec::<u8>::new();
+    let mut track_buffer_decrypted = Vec::<u8>::new();
+
+    let mut track_file_audio =
+        AudioFile::open(&session, *file_id, 40)
+            .await
+            .map_err(|e| DownloadTrackError {
+                kind: DownloadTrackErrorKind::AudioFile,
+                error: e.into(),
+            })?;
+
+    track_file_audio
+        .read_to_end(&mut track_buffer)
+        .map_err(|e| DownloadTrackError {
+            kind: DownloadTrackErrorKind::TrackFile,
+            error: e.into(),
+        })?;
+
+    AudioDecrypt::new(Some(track_file_key), &track_buffer[..])
+        .read_to_end(&mut track_buffer_decrypted)
+        .map_err(|e| DownloadTrackError {
+            kind: DownloadTrackErrorKind::Decrypt,
+            error: e.into(),
+        })?;
+
+    let track_file_cursor = Cursor::new(&track_buffer_decrypted[0xa7..]);
+    let mut track_comments = CommentHeader::new();
+
+    track_comments.set_vendor("Ogg");
+
+    track_comments.add_tag_single("title", &track.name);
+    track_comments.add_tag_single("album", &track.album.name);
+
+    track
+        .artists
+        .iter()
+        .for_each(|artist| track_comments.add_tag_single("artist", &artist.name));
+
+    let mut track_file_out = replace_comment_header(track_file_cursor, track_comments);
+
+    let mut track_file_write =
+        File::create(&track_output_path)
+            .await
+            .map_err(|e| DownloadTrackError {
+                kind: DownloadTrackErrorKind::FileCreate,
+                error: e.into(),
+            })?;
+
+    copy(&mut track_file_out, &mut track_file_write)
+        .await
+        .map_err(|e| DownloadTrackError {
+            kind: DownloadTrackErrorKind::FileWrite,
+            error: e.into(),
+        })?;
+
+    Ok(track_output_path)
 }
