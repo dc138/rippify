@@ -163,35 +163,35 @@ async fn main() {
                 }
                 DownloadTrackErrorKind::FolderPath => {
                     print!(
-                        "   - {}: cannot create output folders: {}, aborting...",
+                        "   - {}: cannot create output folders: {}, skipping...",
                         "warning".yellow().bold(),
                         e.error
                     );
                 }
                 DownloadTrackErrorKind::AudioKey => {
                     println!(
-                        "   - {}: cannot get audio key: {}, skipping",
+                        "   - {}: cannot get audio key: {}, skipping...",
                         "warning".yellow().bold(),
                         e.error
                     );
                 }
                 DownloadTrackErrorKind::AudioFile => {
                     println!(
-                        "   - {}: cannot get audio file: {:?}, skipping",
+                        "   - {}: cannot get audio file: {:?}, skipping...",
                         "warning".yellow().bold(),
                         e.error
                     );
                 }
                 DownloadTrackErrorKind::TrackFile => {
                     println!(
-                        "   - {}: cannot get track file audio: {}, skipping",
+                        "   - {}: cannot get track file audio: {}, skipping...",
                         "warning".yellow().bold(),
                         e.error
                     );
                 }
                 DownloadTrackErrorKind::Decrypt => {
                     println!(
-                        "   - {}: cannot decrypt audio file: {}, skipping",
+                        "   - {}: cannot decrypt audio file: {}, skipping...",
                         "warning".yellow().bold(),
                         e.error
                     );
