@@ -16,6 +16,7 @@ use std::{
     io::{Cursor, Read},
     path::Path,
     process::exit,
+    sync::Arc,
 };
 use tokio::{
     fs::{create_dir_all, File},
@@ -35,7 +36,7 @@ async fn main() {
     let credentials = Credentials::with_password(&opts.user, &opts.pass);
     let session_config = SessionConfig::default();
 
-    let session = Session::new(session_config, None);
+    let session = Arc::new(Session::new(session_config, None));
 
     match session.connect(credentials, false).await {
         Ok(_) => {
@@ -60,7 +61,7 @@ async fn main() {
     let input_resources: Vec<_> = opts
         .input
         .iter()
-        .map(|line| get_resource_from_line(line))
+        .map(|line| get_resource_from_line(line, session.clone()))
         .filter(|x| {
             if let Err(line) = x {
                 println!(
@@ -83,21 +84,36 @@ async fn main() {
         .map(|x| x.unwrap())
         .collect();
 
+    use std::time::Instant;
+    let now = Instant::now();
+
     let mut track_ids = HashSet::<SpotifyId>::new();
 
-    for res in &input_resources {
-        match res.get_tracks(&session).await {
+    let input_tasks: Vec<_> = input_resources
+        .into_iter()
+        .map(|res| tokio::spawn(async move { res.get_tracks().await }))
+        .collect();
+
+    let mut input_tracks_vec = Vec::new();
+    for task in input_tasks {
+        input_tracks_vec.push(task.await.unwrap());
+    }
+
+    for tracks_vec in &input_tracks_vec {
+        match tracks_vec {
             Ok(tracks) => track_ids.extend(tracks),
             Err(err) => {
                 println!(
-                    "{}: cannot get {} metadata: {}, skipping...",
+                    "{}: cannot item metadata: {}, skipping...",
                     "warning".yellow().bold(),
-                    res.kind,
                     err
                 );
             }
         }
     }
+
+    let elapsed = now.elapsed();
+    println!("fetching metadata took: {:.2?}", elapsed);
 
     if track_ids.is_empty() {
         println!(
@@ -395,11 +411,12 @@ impl ResourceKind {
 struct InputResource {
     kind: ResourceKind,
     id: SpotifyId,
+    session: Arc<Session>,
 }
 
 impl InputResource {
     #[async_recursion]
-    async fn get_tracks(&self, session: &Session) -> Result<Vec<SpotifyId>, Error> {
+    async fn get_tracks(&self) -> Result<Vec<SpotifyId>, Error> {
         let mut tracks: Vec<SpotifyId> = Vec::new();
 
         match self.kind {
@@ -407,15 +424,15 @@ impl InputResource {
                 tracks.push(self.id);
             }
             ResourceKind::Playlist => {
-                let playlist = Playlist::get(session, &self.id).await?;
+                let playlist = Playlist::get(&self.session, &self.id).await?;
                 tracks.extend(playlist.tracks());
             }
             ResourceKind::Album => {
-                let album = Album::get(session, &self.id).await?;
+                let album = Album::get(&self.session, &self.id).await?;
                 tracks.extend(album.tracks());
             }
             ResourceKind::Artist => {
-                let artist = Artist::get(session, &self.id).await?;
+                let artist = Artist::get(&self.session, &self.id).await?;
 
                 for album_group in artist.albums.0 {
                     for album in album_group.0 .0 {
@@ -423,8 +440,9 @@ impl InputResource {
                             InputResource {
                                 kind: ResourceKind::Album,
                                 id: album,
+                                session: self.session.clone(),
                             }
-                            .get_tracks(session)
+                            .get_tracks()
                             .await?,
                         );
                     }
@@ -436,8 +454,9 @@ impl InputResource {
                             InputResource {
                                 kind: ResourceKind::Album,
                                 id: album,
+                                session: self.session.clone(),
                             }
-                            .get_tracks(session)
+                            .get_tracks()
                             .await?,
                         );
                     }
@@ -449,29 +468,33 @@ impl InputResource {
     }
 }
 
-fn get_resource_from_line(line: &str) -> Result<InputResource, &str> {
+fn get_resource_from_line(line: &str, session: Arc<Session>) -> Result<InputResource, &str> {
     if let Some(id) = is_resource(line, ResourceKind::Track) {
         Ok(InputResource {
             kind: ResourceKind::Track,
             id,
+            session,
         })
     //
     } else if let Some(id) = is_resource(line, ResourceKind::Album) {
         Ok(InputResource {
             kind: ResourceKind::Album,
             id,
+            session,
         })
     //
     } else if let Some(id) = is_resource(line, ResourceKind::Playlist) {
         Ok(InputResource {
             kind: ResourceKind::Playlist,
             id,
+            session,
         })
     //
     } else if let Some(id) = is_resource(line, ResourceKind::Artist) {
         Ok(InputResource {
             kind: ResourceKind::Artist,
             id,
+            session,
         })
     //
     } else {
