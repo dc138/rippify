@@ -11,7 +11,6 @@ readme = "README.md"
 
 [dependencies]
 getopts = "0.2"
-debug_print = "1.0.0"
 tokio = { version = "1.28.0", features = ["full"] }
 librespot-core = { git = "https://github.com/librespot-org/librespot.git", rev = "c964102" }
 librespot-metadata = { git = "https://github.com/librespot-org/librespot.git", rev = "c964102" }
