@@ -83,6 +83,9 @@ async fn main() {
         .map(|x| x.unwrap())
         .collect();
 
+    use std::time::Instant;
+    let now = Instant::now();
+
     let mut track_ids = HashSet::<SpotifyId>::new();
 
     for res in &input_resources {
@@ -98,6 +101,9 @@ async fn main() {
             }
         }
     }
+
+    let elapsed = now.elapsed();
+    println!("Fetching metadata took: {:.2?}", elapsed);
 
     if track_ids.is_empty() {
         println!(
