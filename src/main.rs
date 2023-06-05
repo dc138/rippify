@@ -502,9 +502,8 @@ async fn get_track_from_id(session: &Session, id: &SpotifyId) -> Result<(Track, 
     while let Some(id) = track_ids.pop_front() {
         let track = Track::get(session, &id).await?;
 
-        match track
-            .files
-            .get_key_value(&AudioFileFormat::OGG_VORBIS_320)
+        match None
+            .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_320))
             .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_160))
             .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_96))
         {
