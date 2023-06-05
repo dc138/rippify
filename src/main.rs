@@ -70,6 +70,13 @@ async fn main() {
                 );
                 false
             } else {
+                let res = x.as_ref().unwrap();
+                println!(
+                    " {} {}: {}",
+                    "->".yellow().bold(),
+                    res.kind,
+                    &res.id.to_base62().unwrap()
+                );
                 true
             }
         })
