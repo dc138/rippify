@@ -86,13 +86,16 @@ async fn main() {
     let mut track_ids = HashSet::<SpotifyId>::new();
 
     for res in &input_resources {
-        if let Err(err) = res.get_tracks(&session, &mut track_ids).await {
-            println!(
-                "{}: cannot get {} metadata: {}, skipping...",
-                "warning".yellow().bold(),
-                res.kind,
-                err
-            );
+        match res.get_tracks(&session).await {
+            Ok(tracks) => track_ids.extend(tracks),
+            Err(err) => {
+                println!(
+                    "{}: cannot get {} metadata: {}, skipping...",
+                    "warning".yellow().bold(),
+                    res.kind,
+                    err
+                );
+            }
         }
     }
 
@@ -396,57 +399,53 @@ struct InputResource {
 
 impl InputResource {
     #[async_recursion]
-    async fn get_tracks(
-        &self,
-        session: &Session,
-        existing_tracks: &mut HashSet<SpotifyId>,
-    ) -> Result<(), Error> {
+    async fn get_tracks(&self, session: &Session) -> Result<Vec<SpotifyId>, Error> {
+        let mut tracks: Vec<SpotifyId> = Vec::new();
+
         match self.kind {
             ResourceKind::Track => {
-                existing_tracks.insert(self.id);
+                tracks.push(self.id);
             }
             ResourceKind::Playlist => {
                 let playlist = Playlist::get(session, &self.id).await?;
-
-                for track in playlist.tracks() {
-                    existing_tracks.insert(track.to_owned());
-                }
+                tracks.extend(playlist.tracks());
             }
             ResourceKind::Album => {
                 let album = Album::get(session, &self.id).await?;
-
-                for track in album.tracks() {
-                    existing_tracks.insert(track.to_owned());
-                }
+                tracks.extend(album.tracks());
             }
             ResourceKind::Artist => {
                 let artist = Artist::get(session, &self.id).await?;
 
                 for album_group in artist.albums.0 {
                     for album in album_group.0 .0 {
-                        InputResource {
-                            kind: ResourceKind::Album,
-                            id: album,
-                        }
-                        .get_tracks(session, existing_tracks)
-                        .await?;
+                        tracks.extend(
+                            InputResource {
+                                kind: ResourceKind::Album,
+                                id: album,
+                            }
+                            .get_tracks(session)
+                            .await?,
+                        );
                     }
                 }
 
                 for album_group in artist.singles.0 {
                     for album in album_group.0 .0 {
-                        InputResource {
-                            kind: ResourceKind::Album,
-                            id: album,
-                        }
-                        .get_tracks(session, existing_tracks)
-                        .await?;
+                        tracks.extend(
+                            InputResource {
+                                kind: ResourceKind::Album,
+                                id: album,
+                            }
+                            .get_tracks(session)
+                            .await?,
+                        );
                     }
                 }
             }
         }
 
-        Ok(())
+        Ok(tracks)
     }
 }
 
