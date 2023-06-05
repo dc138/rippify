@@ -477,16 +477,10 @@ impl OutputFormat {
             .replace("{name}", &track.name.as_str().replace('/', " "))
             .replace("{ext}", "ogg");
 
-        if let Some(split_pos) = parsed.rfind('/') {
-            OutputFile {
-                dir: Some(parsed[..=split_pos].to_owned()),
-                file: parsed,
-            }
-        } else {
-            OutputFile {
-                dir: None,
-                file: parsed,
-            }
+        OutputFile {
+            dir: parsed
+                .rfind('/').map(|split_pos| parsed[..=split_pos].to_owned()),
+            file: parsed,
         }
     }
 }
@@ -542,7 +536,7 @@ async fn download_track(
     let mut track_buffer_decrypted = Vec::<u8>::new();
 
     let mut track_file_audio =
-        AudioFile::open(&session, *file_id, 40)
+        AudioFile::open(session, *file_id, 40)
             .await
             .map_err(|e| DownloadTrackError {
                 kind: DownloadTrackErrorKind::AudioFile,
