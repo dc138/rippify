@@ -147,71 +147,90 @@ async fn main() {
             }
         };
 
-        match download_track(&track, &track_file_id, &session, &opts.format).await {
+        let output_file = opts.format.parse_output_format(&track);
+
+        if Path::new(&output_file.file).exists() {
+            println!(
+                "   - {}: output file \"{}\" already exists, skipping...",
+                "note".bright_blue().bold(),
+                output_file.file
+            );
+
+            tracks_existing += 1;
+            continue;
+        }
+
+        let track_buffer = match track_download(&track, &track_file_id, &session).await {
+            Ok(buffer) => buffer,
+            Err(err) => {
+                match err.kind {
+                    TrackDownloadErrorKind::AudioKey => {
+                        println!(
+                            "   - {}: cannot get audio key: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                    TrackDownloadErrorKind::AudioFile => {
+                        println!(
+                            "   - {}: cannot get audio file: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                    TrackDownloadErrorKind::TrackFile => {
+                        println!(
+                            "   - {}: cannot get track file audio: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                    TrackDownloadErrorKind::Decrypt => {
+                        println!(
+                            "   - {}: cannot decrypt audio file: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                };
+                continue;
+            }
+        };
+
+        let track_cursor = track_add_metadata_tags(track_buffer, &track);
+
+        match track_write(track_cursor, output_file).await {
             Ok(output) => {
                 println!("   - wrote \"{}\"", output);
                 tracks_completed += 1;
             }
-            Err(e) => match e.kind {
-                DownloadTrackErrorKind::FileExists => {
-                    println!(
-                        "   - {}: output file \"{}\" already exists, skipping...",
-                        "note".bright_blue().bold(),
-                        e.error
-                    );
-                    tracks_existing += 1;
-                }
-                DownloadTrackErrorKind::FolderPath => {
-                    print!(
-                        "   - {}: cannot create output folders: {}, skipping...",
-                        "warning".yellow().bold(),
-                        e.error
-                    );
-                }
-                DownloadTrackErrorKind::AudioKey => {
-                    println!(
-                        "   - {}: cannot get audio key: {}, skipping...",
-                        "warning".yellow().bold(),
-                        e.error
-                    );
-                }
-                DownloadTrackErrorKind::AudioFile => {
-                    println!(
-                        "   - {}: cannot get audio file: {:?}, skipping...",
-                        "warning".yellow().bold(),
-                        e.error
-                    );
-                }
-                DownloadTrackErrorKind::TrackFile => {
-                    println!(
-                        "   - {}: cannot get track file audio: {}, skipping...",
-                        "warning".yellow().bold(),
-                        e.error
-                    );
-                }
-                DownloadTrackErrorKind::Decrypt => {
-                    println!(
-                        "   - {}: cannot decrypt audio file: {}, skipping...",
-                        "warning".yellow().bold(),
-                        e.error
-                    );
-                }
-                DownloadTrackErrorKind::FileCreate => {
-                    println!(
-                        "   - {}: cannot create output file: {}, skipping...",
-                        "warning".yellow().bold(),
-                        e.error
-                    );
-                }
-                DownloadTrackErrorKind::FileWrite => {
-                    println!(
-                        "   - {}: cannot write output file: {}, skipping...",
-                        "warning".yellow().bold(),
-                        e.error
-                    );
-                }
-            },
-        }
+            Err(err) => {
+                match err.kind {
+                    TrackWriteErrorKind::FolderCreate => {
+                        print!(
+                            "   - {}: cannot create output folders: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                    TrackWriteErrorKind::FileCreate => {
+                        println!(
+                            "   - {}: cannot create output file: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                    TrackWriteErrorKind::FileWrite => {
+                        println!(
+                            "   - {}: cannot write output file: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                };
+                continue;
+            }
+        };
     }
 
     println!("\n{} Processed tracks: ", "=>".green().bold(),);
@@ -479,56 +498,41 @@ impl OutputFormat {
 
         OutputFile {
             dir: parsed
-                .rfind('/').map(|split_pos| parsed[..=split_pos].to_owned()),
+                .rfind('/')
+                .map(|split_pos| parsed[..=split_pos].to_owned()),
             file: parsed,
         }
     }
 }
 
-struct DownloadTrackError {
-    kind: DownloadTrackErrorKind,
+trait TrackProcessErrorKind {}
+
+struct TrackProcessError<T: TrackProcessErrorKind> {
+    kind: T,
     error: Box<dyn std::error::Error>,
 }
 
-enum DownloadTrackErrorKind {
-    FileExists,
-    FolderPath,
+enum TrackDownloadErrorKind {
     AudioKey,
     AudioFile,
     TrackFile,
     Decrypt,
-    FileCreate,
-    FileWrite,
 }
 
-async fn download_track(
+impl TrackProcessErrorKind for TrackDownloadErrorKind {}
+type TrackDownloadError = TrackProcessError<TrackDownloadErrorKind>;
+
+async fn track_download(
     track: &Track,
     file_id: &FileId,
     session: &Session,
-    output_format: &OutputFormat,
-) -> Result<String, DownloadTrackError> {
-    let output_file = output_format.parse_output_format(track);
-
-    if Path::new(&output_file.file).exists() {
-        return Err(DownloadTrackError {
-            kind: DownloadTrackErrorKind::FileExists,
-            error: output_file.file.into(),
-        });
-    }
-
-    if let Some(path) = output_file.dir {
-        create_dir_all(path).await.map_err(|e| DownloadTrackError {
-            kind: DownloadTrackErrorKind::FolderPath,
-            error: e.into(),
-        })?;
-    }
-
+) -> Result<Vec<u8>, TrackDownloadError> {
     let track_file_key = session
         .audio_key()
         .request(track.id, *file_id)
         .await
-        .map_err(|e| DownloadTrackError {
-            kind: DownloadTrackErrorKind::AudioKey,
+        .map_err(|e| TrackProcessError {
+            kind: TrackDownloadErrorKind::AudioKey,
             error: e.into(),
         })?;
 
@@ -538,52 +542,76 @@ async fn download_track(
     let mut track_file_audio =
         AudioFile::open(session, *file_id, 40)
             .await
-            .map_err(|e| DownloadTrackError {
-                kind: DownloadTrackErrorKind::AudioFile,
+            .map_err(|e| TrackProcessError {
+                kind: TrackDownloadErrorKind::AudioFile,
                 error: e.into(),
             })?;
 
     track_file_audio
         .read_to_end(&mut track_buffer)
-        .map_err(|e| DownloadTrackError {
-            kind: DownloadTrackErrorKind::TrackFile,
+        .map_err(|e| TrackProcessError {
+            kind: TrackDownloadErrorKind::TrackFile,
             error: e.into(),
         })?;
 
     AudioDecrypt::new(Some(track_file_key), &track_buffer[..])
         .read_to_end(&mut track_buffer_decrypted)
-        .map_err(|e| DownloadTrackError {
-            kind: DownloadTrackErrorKind::Decrypt,
+        .map_err(|e| TrackProcessError {
+            kind: TrackDownloadErrorKind::Decrypt,
             error: e.into(),
         })?;
 
-    let track_file_cursor = Cursor::new(&track_buffer_decrypted[0xa7..]);
-    let mut track_comments = CommentHeader::new();
+    Ok(track_buffer_decrypted)
+}
 
-    track_comments.set_vendor("Ogg");
+fn track_add_metadata_tags(track_buffer: Vec<u8>, track: &Track) -> Cursor<Vec<u8>> {
+    let file_cursor = Cursor::new(&track_buffer[0xa7..]);
+    let mut metadata = CommentHeader::new();
 
-    track_comments.add_tag_single("title", &track.name);
-    track_comments.add_tag_single("album", &track.album.name);
+    metadata.set_vendor("Ogg");
+
+    metadata.add_tag_single("title", &track.name);
+    metadata.add_tag_single("album", &track.album.name);
 
     track
         .artists
         .iter()
-        .for_each(|artist| track_comments.add_tag_single("artist", &artist.name));
+        .for_each(|artist| metadata.add_tag_single("artist", &artist.name));
 
-    let mut track_file_out = replace_comment_header(track_file_cursor, track_comments);
+    replace_comment_header(file_cursor, metadata)
+}
 
-    let mut track_file_write =
-        File::create(&output_file.file)
-            .await
-            .map_err(|e| DownloadTrackError {
-                kind: DownloadTrackErrorKind::FileCreate,
-                error: e.into(),
-            })?;
+enum TrackWriteErrorKind {
+    FolderCreate,
+    FileCreate,
+    FileWrite,
+}
 
-    copy(&mut track_file_out, &mut track_file_write)
+impl TrackProcessErrorKind for TrackWriteErrorKind {}
+type TrackWriteError = TrackProcessError<TrackWriteErrorKind>;
+
+async fn track_write(
+    mut track_cursor: Cursor<Vec<u8>>,
+    output_file: OutputFile,
+) -> Result<String, TrackWriteError> {
+    if let Some(path) = output_file.dir {
+        create_dir_all(path).await.map_err(|e| TrackWriteError {
+            kind: TrackWriteErrorKind::FolderCreate,
+            error: e.into(),
+        })?;
+    }
+
+    let mut file_write = File::create(&output_file.file)
         .await
-        .map_err(|e| DownloadTrackError {
-            kind: DownloadTrackErrorKind::FileWrite,
+        .map_err(|e| TrackProcessError {
+            kind: TrackWriteErrorKind::FileCreate,
+            error: e.into(),
+        })?;
+
+    copy(&mut track_cursor, &mut file_write)
+        .await
+        .map_err(|e| TrackProcessError {
+            kind: TrackWriteErrorKind::FileWrite,
             error: e.into(),
         })?;
 
