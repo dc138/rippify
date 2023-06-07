@@ -84,11 +84,11 @@ async fn main() {
         .map(|x| x.unwrap())
         .collect();
 
-    let mut track_ids = HashSet::<SpotifyId>::new();
+    let mut input_tracks = HashSet::<SpotifyId>::new();
 
     for res in &input_resources {
         match res.get_tracks(&session).await {
-            Ok(tracks) => track_ids.extend(tracks),
+            Ok(tracks) => input_tracks.extend(tracks),
             Err(err) => {
                 println!(
                     "{}: cannot get metadata for {} {}: {}, skipping...",
@@ -101,7 +101,7 @@ async fn main() {
         }
     }
 
-    if track_ids.is_empty() {
+    if input_tracks.is_empty() {
         println!(
             "\n{}: didn't get any tracks, aborting...",
             "error".red().bold()
@@ -112,16 +112,16 @@ async fn main() {
     println!(
         "\n{} Parsed {} tracks:",
         "=>".green().bold(),
-        track_ids.len().to_string().bold()
+        input_tracks.len().to_string().bold()
     );
 
-    let mut tracks_completed: usize = 0;
-    let mut tracks_existing: usize = 0;
+    let mut num_completed: usize = 0;
+    let mut num_existing: usize = 0;
 
-    for track_id in &track_ids {
+    for track_id in &input_tracks {
         print!(" {} ", "->".yellow().bold());
 
-        let (track, track_file_id) = match get_track_from_id(&session, track_id).await {
+        let (track, file_id) = match get_track_from_id(&session, track_id).await {
             Ok((track, file_id)) => {
                 if track.id.to_base62().unwrap() != track_id.to_base62().unwrap() {
                     println!(
@@ -136,12 +136,12 @@ async fn main() {
 
                 (track, file_id)
             }
-            Err(e) => {
+            Err(err) => {
                 println!("{} ({})", "??".bold(), track_id.to_base62().unwrap());
                 println!(
                     "   - {}: cannot get track from id: {}, skipping...",
                     "warning".yellow().bold(),
-                    e,
+                    err,
                 );
                 continue;
             }
@@ -156,11 +156,11 @@ async fn main() {
                 output_file.file
             );
 
-            tracks_existing += 1;
+            num_existing += 1;
             continue;
         }
 
-        let track_buffer = match track_download(&track, &track_file_id, &session).await {
+        let buffer = match track_download(&track, &file_id, &session).await {
             Ok(buffer) => buffer,
             Err(err) => {
                 match err.kind {
@@ -197,12 +197,12 @@ async fn main() {
             }
         };
 
-        let track_cursor = track_add_metadata_tags(track_buffer, &track);
+        let buffer_cursor = track_add_metadata_tags(buffer, &track);
 
-        match track_write(track_cursor, output_file).await {
+        match track_write(buffer_cursor, output_file).await {
             Ok(output) => {
                 println!("   - wrote \"{}\"", output);
-                tracks_completed += 1;
+                num_completed += 1;
             }
             Err(err) => {
                 match err.kind {
@@ -238,21 +238,21 @@ async fn main() {
     println!(
         " {} {} error",
         "->".yellow().bold(),
-        track_ids.len() - tracks_completed - tracks_existing
+        input_tracks.len() - num_completed - num_existing
     );
 
     println!(
         " {} {} already downloaded",
         "->".yellow().bold(),
-        tracks_existing
+        num_existing
     );
 
-    println!(" {} {} new", "->".yellow().bold(), tracks_completed);
+    println!(" {} {} new", "->".yellow().bold(), num_completed);
 
     println!(
         " {} {} total processed",
         "->".yellow().bold(),
-        track_ids.len()
+        input_tracks.len()
     )
 }
 
@@ -356,7 +356,7 @@ impl InputResource {
     async fn get_tracks(
         &self,
         session: &Session,
-    ) -> Result<Vec<SpotifyId>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<SpotifyId>, librespot_core::error::Error> {
         let mut tracks: Vec<SpotifyId> = Vec::new();
 
         match self.kind {
