@@ -1,27 +1,21 @@
 use async_recursion::async_recursion;
 use colored::Colorize;
-use librespot_audio::{AudioDecrypt, AudioFile};
-use librespot_core::{
-    authentication::Credentials, config::SessionConfig, session::Session, spotify_id::SpotifyId,
-    FileId,
-};
-
-use getopts::{Fail, Options};
-use librespot_metadata::{audio::AudioFileFormat, Album, Artist, Metadata, Playlist, Track};
-use oggvorbismeta::{replace_comment_header, CommentHeader, VorbisComments};
-use regex::Regex;
-use std::{
-    collections::{HashSet, VecDeque},
-    env, fmt,
-    io::{Cursor, Read},
-    path::Path,
-    process::exit,
-};
-
-use tokio::{
-    fs::{create_dir_all, File},
-    io::copy,
-};
+use librespot_audio as lsa;
+use librespot_core as lsc;
+use librespot_core::authentication as lsc_auth;
+use librespot_metadata as lsm;
+use librespot_metadata::audio as lsm_audio;
+use lsm::Metadata;
+use oggvorbismeta as ovm;
+use ovm::VorbisComments;
+use std::collections as coll;
+use std::env;
+use std::fmt;
+use std::fs;
+use std::io;
+use std::io::Read;
+use std::path;
+use std::process as proc;
 
 #[tokio::main]
 async fn main() {
@@ -29,22 +23,18 @@ async fn main() {
         Ok(opts) => opts,
         Err(err) => {
             println!("{}: {}", "error".red().bold(), err.to_string().bold());
-            exit(1);
+            proc::exit(1);
         }
     };
 
-    let credentials = Credentials::with_password(&opts.user, &opts.pass);
-    let session_config = SessionConfig::default();
+    let credentials = lsc_auth::Credentials::with_password(&opts.user, &opts.pass);
+    let session_config = lsc::SessionConfig::default();
 
-    let session = Session::new(session_config, None);
+    let session = lsc::Session::new(session_config, None);
 
     match session.connect(credentials, false).await {
         Ok(_) => {
-            println!(
-                "{} Logged in as: {}",
-                "=>".green().bold(),
-                &opts.user.bright_blue()
-            );
+            println!("{} Logged in as: {}", "=>".green().bold(), &opts.user.bright_blue());
         }
         Err(err) => {
             println!(
@@ -52,7 +42,7 @@ async fn main() {
                 "error".red().bold(),
                 err.to_string().to_lowercase()
             );
-            exit(1);
+            proc::exit(1);
         }
     };
 
@@ -84,7 +74,7 @@ async fn main() {
         .map(|x| x.unwrap())
         .collect();
 
-    let mut input_tracks = HashSet::<SpotifyId>::new();
+    let mut input_tracks = coll::HashSet::<lsc::SpotifyId>::new();
 
     for res in &input_resources {
         match res.get_tracks(&session).await {
@@ -102,11 +92,8 @@ async fn main() {
     }
 
     if input_tracks.is_empty() {
-        println!(
-            "\n{}: didn't get any tracks, aborting...",
-            "error".red().bold()
-        );
-        exit(0);
+        println!("\n{}: didn't get any tracks, aborting...", "error".red().bold());
+        proc::exit(0);
     }
 
     println!(
@@ -149,7 +136,7 @@ async fn main() {
 
         let output_file = opts.format.parse_output_format(&track);
 
-        if Path::new(&output_file.file).exists() {
+        if path::Path::new(&output_file.file).exists() {
             println!(
                 "   - {}: output file \"{}\" already exists, skipping...",
                 "note".bright_blue().bold(),
@@ -199,7 +186,7 @@ async fn main() {
 
         let buffer_cursor = track_add_metadata_tags(buffer, &track);
 
-        match track_write(buffer_cursor, output_file).await {
+        match track_write(buffer_cursor, output_file) {
             Ok(output) => {
                 println!("   - wrote \"{}\"", output);
                 num_completed += 1;
@@ -241,19 +228,11 @@ async fn main() {
         input_tracks.len() - num_completed - num_existing
     );
 
-    println!(
-        " {} {} already downloaded",
-        "->".yellow().bold(),
-        num_existing
-    );
+    println!(" {} {} already downloaded", "->".yellow().bold(), num_existing);
 
     println!(" {} {} new", "->".yellow().bold(), num_completed);
 
-    println!(
-        " {} {} total processed",
-        "->".yellow().bold(),
-        input_tracks.len()
-    )
+    println!(" {} {} total processed", "->".yellow().bold(), input_tracks.len())
 }
 
 struct UserParams {
@@ -263,11 +242,11 @@ struct UserParams {
     input: Vec<String>,
 }
 
-fn parse_opts() -> Result<UserParams, Fail> {
+fn parse_opts() -> Result<UserParams, getopts::Fail> {
     let args: Vec<String> = env::args().collect();
     let program = args[0].clone();
 
-    let mut opts = Options::new();
+    let mut opts = getopts::Options::new();
 
     opts.optflag("h", "help", "print the help menu");
 
@@ -283,13 +262,9 @@ fn parse_opts() -> Result<UserParams, Fail> {
     let matches = opts.parse(&args[1..])?;
     let input = matches.free.clone();
 
-    if matches.opt_present("h")
-        || !matches.opt_present("u")
-        || !matches.opt_present("p")
-        || input.is_empty()
-    {
+    if matches.opt_present("h") || !matches.opt_present("u") || !matches.opt_present("p") || input.is_empty() {
         print_usage(&program, opts);
-        exit(0);
+        proc::exit(0);
     }
 
     let format = OutputFormat {
@@ -309,7 +284,7 @@ fn parse_opts() -> Result<UserParams, Fail> {
     })
 }
 
-fn print_usage(program: &str, opts: Options) {
+fn print_usage(program: &str, opts: getopts::Options) {
     let brief = format!("Usage: {} [OPTIONS] URIs...", program);
     print!("{}", opts.usage(&brief));
 }
@@ -333,46 +308,43 @@ impl fmt::Display for ResourceKind {
 }
 
 impl ResourceKind {
-    fn to_url_regex(&self) -> Regex {
-        Regex::new(&format!(
+    fn to_url_regex(&self) -> regex::Regex {
+        regex::Regex::new(&format!(
             r"^(http(s)?://)?open\.spotify\.com/{}/([[:alnum:]]{{22}})$",
             self
         ))
         .unwrap()
     }
 
-    fn to_uri_regex(&self) -> Regex {
-        Regex::new(&format!(r"^spotify:{}:([[:alnum:]]{{22}})$", self)).unwrap()
+    fn to_uri_regex(&self) -> regex::Regex {
+        regex::Regex::new(&format!(r"^spotify:{}:([[:alnum:]]{{22}})$", self)).unwrap()
     }
 }
 
 struct InputResource {
     kind: ResourceKind,
-    id: SpotifyId,
+    id: lsc::SpotifyId,
 }
 
 impl InputResource {
     #[async_recursion]
-    async fn get_tracks(
-        &self,
-        session: &Session,
-    ) -> Result<Vec<SpotifyId>, librespot_core::error::Error> {
-        let mut tracks: Vec<SpotifyId> = Vec::new();
+    async fn get_tracks(&self, session: &lsc::Session) -> Result<Vec<lsc::SpotifyId>, librespot_core::error::Error> {
+        let mut tracks: Vec<lsc::SpotifyId> = Vec::new();
 
         match self.kind {
             ResourceKind::Track => {
                 tracks.push(self.id);
             }
             ResourceKind::Playlist => {
-                let playlist = Playlist::get(session, &self.id).await?;
+                let playlist = lsm::Playlist::get(session, &self.id).await?;
                 tracks.extend(playlist.tracks());
             }
             ResourceKind::Album => {
-                let album = Album::get(session, &self.id).await?;
+                let album = lsm::Album::get(session, &self.id).await?;
                 tracks.extend(album.tracks());
             }
             ResourceKind::Artist => {
-                let artist = Artist::get(session, &self.id).await?;
+                let artist = lsm::Artist::get(session, &self.id).await?;
 
                 for album_group in artist.albums.0 {
                     for album in album_group.0 .0 {
@@ -436,14 +408,10 @@ fn get_resource_from_line(line: &str) -> Result<InputResource, &str> {
     }
 }
 
-fn is_resource(line: &str, res: ResourceKind) -> Option<SpotifyId> {
-    if let Some(captures) = res
-        .to_url_regex()
-        .captures(line)
-        .or(res.to_uri_regex().captures(line))
-    {
+fn is_resource(line: &str, res: ResourceKind) -> Option<lsc::SpotifyId> {
+    if let Some(captures) = res.to_url_regex().captures(line).or(res.to_uri_regex().captures(line)) {
         let id_str = captures.iter().last().unwrap().unwrap().as_str();
-        let id = SpotifyId::from_base62(id_str).unwrap();
+        let id = lsc::SpotifyId::from_base62(id_str).unwrap();
 
         Some(id)
     //
@@ -453,28 +421,26 @@ fn is_resource(line: &str, res: ResourceKind) -> Option<SpotifyId> {
 }
 
 async fn get_track_from_id(
-    session: &Session,
-    id: &SpotifyId,
-) -> Result<(Track, FileId), librespot_core::error::Error> {
-    let mut track_ids = VecDeque::<SpotifyId>::new();
+    session: &lsc::Session,
+    id: &lsc::SpotifyId,
+) -> Result<(lsm::Track, lsc::FileId), librespot_core::error::Error> {
+    let mut track_ids = coll::VecDeque::<lsc::SpotifyId>::new();
     track_ids.push_back(id.to_owned());
 
     while let Some(id) = track_ids.pop_front() {
-        let track = Track::get(session, &id).await?;
+        let track = lsm::Track::get(session, &id).await?;
 
         match None
-            .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_320))
-            .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_160))
-            .or(track.files.get_key_value(&AudioFileFormat::OGG_VORBIS_96))
+            .or(track.files.get_key_value(&lsm_audio::AudioFileFormat::OGG_VORBIS_320))
+            .or(track.files.get_key_value(&lsm_audio::AudioFileFormat::OGG_VORBIS_160))
+            .or(track.files.get_key_value(&lsm_audio::AudioFileFormat::OGG_VORBIS_96))
         {
             Some(format) => return Ok((track.to_owned(), format.1.to_owned())),
             None => track_ids.extend(track.alternatives.0),
         };
     }
 
-    Err(librespot_core::error::Error::not_found(
-        "cannot find a suitable track",
-    ))
+    Err(librespot_core::error::Error::not_found("cannot find a suitable track"))
 }
 
 struct OutputFormat {
@@ -488,7 +454,7 @@ struct OutputFile {
 }
 
 impl OutputFormat {
-    fn parse_output_format(&self, track: &Track) -> OutputFile {
+    fn parse_output_format(&self, track: &lsm::Track) -> OutputFile {
         let parsed = self
             .format_string
             .replace("{author}", &track.artists.first().unwrap().name) // NOTE: using the first found artist as the "main" artist
@@ -497,9 +463,7 @@ impl OutputFormat {
             .replace("{ext}", "ogg");
 
         OutputFile {
-            dir: parsed
-                .rfind('/')
-                .map(|split_pos| parsed[..=split_pos].to_owned()),
+            dir: parsed.rfind('/').map(|split_pos| parsed[..=split_pos].to_owned()),
             file: parsed,
         }
     }
@@ -523,9 +487,9 @@ impl TrackProcessErrorKind for TrackDownloadErrorKind {}
 type TrackDownloadError = TrackProcessError<TrackDownloadErrorKind>;
 
 async fn track_download(
-    track: &Track,
-    file_id: &FileId,
-    session: &Session,
+    track: &lsm::Track,
+    file_id: &lsc::FileId,
+    session: &lsc::Session,
 ) -> Result<Vec<u8>, TrackDownloadError> {
     let track_file_key = session
         .audio_key()
@@ -539,13 +503,12 @@ async fn track_download(
     let mut track_buffer = Vec::<u8>::new();
     let mut track_buffer_decrypted = Vec::<u8>::new();
 
-    let mut track_file_audio =
-        AudioFile::open(session, *file_id, 40)
-            .await
-            .map_err(|e| TrackProcessError {
-                kind: TrackDownloadErrorKind::AudioFile,
-                error: e.into(),
-            })?;
+    let mut track_file_audio = lsa::AudioFile::open(session, *file_id, 40)
+        .await
+        .map_err(|e| TrackProcessError {
+            kind: TrackDownloadErrorKind::AudioFile,
+            error: e.into(),
+        })?;
 
     track_file_audio
         .read_to_end(&mut track_buffer)
@@ -554,7 +517,7 @@ async fn track_download(
             error: e.into(),
         })?;
 
-    AudioDecrypt::new(Some(track_file_key), &track_buffer[..])
+    lsa::AudioDecrypt::new(Some(track_file_key), &track_buffer[..])
         .read_to_end(&mut track_buffer_decrypted)
         .map_err(|e| TrackProcessError {
             kind: TrackDownloadErrorKind::Decrypt,
@@ -564,9 +527,9 @@ async fn track_download(
     Ok(track_buffer_decrypted)
 }
 
-fn track_add_metadata_tags(track_buffer: Vec<u8>, track: &Track) -> Cursor<Vec<u8>> {
-    let file_cursor = Cursor::new(&track_buffer[0xa7..]);
-    let mut metadata = CommentHeader::new();
+fn track_add_metadata_tags(track_buffer: Vec<u8>, track: &lsm::Track) -> io::Cursor<Vec<u8>> {
+    let file_cursor = io::Cursor::new(&track_buffer[0xa7..]);
+    let mut metadata = ovm::CommentHeader::new();
 
     metadata.set_vendor("Ogg");
 
@@ -578,7 +541,7 @@ fn track_add_metadata_tags(track_buffer: Vec<u8>, track: &Track) -> Cursor<Vec<u
         .iter()
         .for_each(|artist| metadata.add_tag_single("artist", &artist.name));
 
-    replace_comment_header(file_cursor, metadata)
+    ovm::replace_comment_header(file_cursor, metadata)
 }
 
 enum TrackWriteErrorKind {
@@ -590,30 +553,23 @@ enum TrackWriteErrorKind {
 impl TrackProcessErrorKind for TrackWriteErrorKind {}
 type TrackWriteError = TrackProcessError<TrackWriteErrorKind>;
 
-async fn track_write(
-    mut track_cursor: Cursor<Vec<u8>>,
-    output_file: OutputFile,
-) -> Result<String, TrackWriteError> {
+fn track_write(mut track_cursor: io::Cursor<Vec<u8>>, output_file: OutputFile) -> Result<String, TrackWriteError> {
     if let Some(path) = output_file.dir {
-        create_dir_all(path).await.map_err(|e| TrackWriteError {
+        fs::create_dir_all(path).map_err(|e| TrackWriteError {
             kind: TrackWriteErrorKind::FolderCreate,
             error: e.into(),
         })?;
     }
 
-    let mut file_write = File::create(&output_file.file)
-        .await
-        .map_err(|e| TrackProcessError {
-            kind: TrackWriteErrorKind::FileCreate,
-            error: e.into(),
-        })?;
+    let mut file_write = fs::File::create(&output_file.file).map_err(|e| TrackProcessError {
+        kind: TrackWriteErrorKind::FileCreate,
+        error: e.into(),
+    })?;
 
-    copy(&mut track_cursor, &mut file_write)
-        .await
-        .map_err(|e| TrackProcessError {
-            kind: TrackWriteErrorKind::FileWrite,
-            error: e.into(),
-        })?;
+    io::copy(&mut track_cursor, &mut file_write).map_err(|e| TrackProcessError {
+        kind: TrackWriteErrorKind::FileWrite,
+        error: e.into(),
+    })?;
 
     Ok(output_file.file)
 }
