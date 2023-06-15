@@ -9,4 +9,4 @@ This application is developed and provided for educational purposes **only**.
 
 The code in this repository is provided under the MIT license, see the attatched `LICENSE.txt` file for more information.
 Note however, that some third-party dependencies are provided under their original `MPL-2.0` license, in compliance with any terms specified by them.
-Copyright atributions for any third party dependencies that require tem have been included in the `LICENSE.txt` file.
+Copyright atributions for any third party dependencies that require them have been included in the `COPYRIGHT.md` file.
