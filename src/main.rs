@@ -1,13 +1,12 @@
 use async_recursion::async_recursion;
 use colored::Colorize;
+use lewton::header as lhr;
 use librespot_audio as lsa;
 use librespot_core as lsc;
 use librespot_core::authentication as lsc_auth;
 use librespot_metadata as lsm;
 use librespot_metadata::audio as lsm_audio;
 use lsm::Metadata;
-use oggvorbismeta as ovm;
-use ovm::VorbisComments;
 use std::collections as coll;
 use std::env;
 use std::fmt;
@@ -184,9 +183,37 @@ async fn main() {
             }
         };
 
-        let buffer_cursor = track_add_metadata_tags(buffer, &track);
+        let buffer_tags = match track_add_metadata_tags(buffer, &track) {
+            Ok(buf) => buf,
+            Err(err) => {
+                match err.kind {
+                    TagsWriteErrorKind::Read => {
+                        print!(
+                            "   - {}: cannot read ogg packet: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                    TagsWriteErrorKind::Write => {
+                        print!(
+                            "   - {}: cannot write ogg packet: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                    TagsWriteErrorKind::Header => {
+                        print!(
+                            "   - {}: cannot create comment header packet: {}, skipping...",
+                            "warning".yellow().bold(),
+                            err.error
+                        );
+                    }
+                }
+                continue;
+            }
+        };
 
-        match track_write(buffer_cursor, output_file) {
+        match track_write(buffer_tags, output_file) {
             Ok(output) => {
                 println!("   - wrote \"{}\"", output);
                 num_completed += 1;
@@ -469,9 +496,9 @@ impl OutputFormat {
     }
 }
 
-trait TrackProcessErrorKind {}
+trait ProcessErrorKind {}
 
-struct TrackProcessError<T: TrackProcessErrorKind> {
+struct ProcessError<T: ProcessErrorKind> {
     kind: T,
     error: Box<dyn std::error::Error>,
 }
@@ -483,8 +510,8 @@ enum TrackDownloadErrorKind {
     Decrypt,
 }
 
-impl TrackProcessErrorKind for TrackDownloadErrorKind {}
-type TrackDownloadError = TrackProcessError<TrackDownloadErrorKind>;
+impl ProcessErrorKind for TrackDownloadErrorKind {}
+type TrackDownloadError = ProcessError<TrackDownloadErrorKind>;
 
 async fn track_download(
     track: &lsm::Track,
@@ -495,7 +522,7 @@ async fn track_download(
         .audio_key()
         .request(track.id, *file_id)
         .await
-        .map_err(|e| TrackProcessError {
+        .map_err(|e| ProcessError {
             kind: TrackDownloadErrorKind::AudioKey,
             error: e.into(),
         })?;
@@ -505,43 +532,26 @@ async fn track_download(
 
     let mut track_file_audio = lsa::AudioFile::open(session, *file_id, 40)
         .await
-        .map_err(|e| TrackProcessError {
+        .map_err(|e| ProcessError {
             kind: TrackDownloadErrorKind::AudioFile,
             error: e.into(),
         })?;
 
     track_file_audio
         .read_to_end(&mut track_buffer)
-        .map_err(|e| TrackProcessError {
+        .map_err(|e| ProcessError {
             kind: TrackDownloadErrorKind::TrackFile,
             error: e.into(),
         })?;
 
     lsa::AudioDecrypt::new(Some(track_file_key), &track_buffer[..])
         .read_to_end(&mut track_buffer_decrypted)
-        .map_err(|e| TrackProcessError {
+        .map_err(|e| ProcessError {
             kind: TrackDownloadErrorKind::Decrypt,
             error: e.into(),
         })?;
 
-    Ok(track_buffer_decrypted)
-}
-
-fn track_add_metadata_tags(track_buffer: Vec<u8>, track: &lsm::Track) -> io::Cursor<Vec<u8>> {
-    let file_cursor = io::Cursor::new(&track_buffer[0xa7..]);
-    let mut metadata = ovm::CommentHeader::new();
-
-    metadata.set_vendor("Ogg");
-
-    metadata.add_tag_single("title", &track.name);
-    metadata.add_tag_single("album", &track.album.name);
-
-    track
-        .artists
-        .iter()
-        .for_each(|artist| metadata.add_tag_single("artist", &artist.name));
-
-    ovm::replace_comment_header(file_cursor, metadata)
+    Ok(track_buffer_decrypted[0xa7..].to_vec())
 }
 
 enum TrackWriteErrorKind {
@@ -550,10 +560,10 @@ enum TrackWriteErrorKind {
     FileWrite,
 }
 
-impl TrackProcessErrorKind for TrackWriteErrorKind {}
-type TrackWriteError = TrackProcessError<TrackWriteErrorKind>;
+impl ProcessErrorKind for TrackWriteErrorKind {}
+type TrackWriteError = ProcessError<TrackWriteErrorKind>;
 
-fn track_write(mut track_cursor: io::Cursor<Vec<u8>>, output_file: OutputFile) -> Result<String, TrackWriteError> {
+fn track_write(track_buffer: Vec<u8>, output_file: OutputFile) -> Result<String, TrackWriteError> {
     if let Some(path) = output_file.dir {
         fs::create_dir_all(path).map_err(|e| TrackWriteError {
             kind: TrackWriteErrorKind::FolderCreate,
@@ -561,15 +571,129 @@ fn track_write(mut track_cursor: io::Cursor<Vec<u8>>, output_file: OutputFile) -
         })?;
     }
 
-    let mut file_write = fs::File::create(&output_file.file).map_err(|e| TrackProcessError {
+    let mut file_write = fs::File::create(&output_file.file).map_err(|e| ProcessError {
         kind: TrackWriteErrorKind::FileCreate,
         error: e.into(),
     })?;
 
-    io::copy(&mut track_cursor, &mut file_write).map_err(|e| TrackProcessError {
+    io::copy(&mut track_buffer.as_slice(), &mut file_write).map_err(|e| ProcessError {
         kind: TrackWriteErrorKind::FileWrite,
         error: e.into(),
     })?;
 
     Ok(output_file.file)
+}
+
+fn track_add_metadata_tags(track_buffer: Vec<u8>, track: &lsm::Track) -> Result<Vec<u8>, TagsWriteError> {
+    let mut metadata = lhr::CommentHeader {
+        vendor: String::from("Ogg"),
+        comment_list: Vec::new(),
+    };
+
+    metadata.comment_list.push((String::from("title"), track.name.clone()));
+    metadata
+        .comment_list
+        .push((String::from("album"), track.album.name.clone()));
+
+    metadata.comment_list.extend(
+        track
+            .artists
+            .iter()
+            .map(|artist| (String::from("artist"), artist.name.clone()))
+            .collect::<Vec<_>>(),
+    );
+
+    replace_header_comment(&track_buffer, &metadata)
+}
+
+// Reverse implementation of https://github.com/RustAudio/lewton/blob/bb2955b717094b40260902cf2f8dd9c5ea62a84a/src/header.rs#L309
+fn make_header_comment(header: &lhr::CommentHeader) -> Option<Vec<u8>> {
+    let mut packet: Vec<u8> = vec![];
+
+    // 'V' 'O' 'R' 'B' 'I' 'S'
+    packet.extend([0x03, 0x76, 0x6F, 0x72, 0x62, 0x69, 0x73] as [u8; 7]);
+
+    let vendor_buf = header.vendor.as_bytes();
+    let vendor_len = TryInto::<u32>::try_into(vendor_buf.len()).ok()?.to_le_bytes();
+
+    packet.extend(vendor_len);
+    packet.extend(vendor_buf);
+
+    let comments_len = TryInto::<u32>::try_into(header.comment_list.len()).ok()?.to_le_bytes();
+
+    packet.extend(comments_len);
+
+    for comment in &header.comment_list {
+        let comment_buf = format!("{}={}", comment.0, comment.1);
+        let comment_buf = comment_buf.as_bytes();
+        let comment_len = TryInto::<u32>::try_into(comment_buf.len()).ok()?.to_le_bytes();
+
+        packet.extend(comment_len);
+        packet.extend(comment_buf);
+    }
+
+    packet.extend([0x01] as [u8; 1]);
+    Some(packet)
+}
+
+enum TagsWriteErrorKind {
+    Read,
+    Write,
+    Header,
+}
+
+impl ProcessErrorKind for TagsWriteErrorKind {}
+type TagsWriteError = ProcessError<TagsWriteErrorKind>;
+
+// Based on https://github.com/RustAudio/ogg/blob/0910d8d57645eccc1a1400731fefef376859c661/examples/repack.rs#L52
+fn replace_header_comment(
+    ogg_buffer: &Vec<u8>,
+    comment_header: &lhr::CommentHeader,
+) -> Result<Vec<u8>, TagsWriteError> {
+    let mut out_buffer = io::Cursor::new(Vec::<u8>::new());
+    let mut in_buffer = io::Cursor::new(ogg_buffer);
+
+    let mut reader = ogg::PacketReader::new(&mut in_buffer);
+    let mut writer = ogg::PacketWriter::new(&mut out_buffer);
+
+    let mut overwrote_header = false;
+
+    loop {
+        if let Some(mut packet) = reader.read_packet().map_err(|e| TagsWriteError {
+            kind: TagsWriteErrorKind::Read,
+            error: e.into(),
+        })? {
+            if !overwrote_header {
+                if let Ok(_) = lhr::read_header_comment(&packet.data) {
+                    packet.data = make_header_comment(comment_header).ok_or(TagsWriteError {
+                        kind: TagsWriteErrorKind::Header,
+                        error: "invalid header comment data".into(),
+                    })?;
+                    overwrote_header = true;
+                }
+            }
+
+            let packet_inf = if packet.last_in_stream() {
+                ogg::PacketWriteEndInfo::EndStream
+            } else if packet.last_in_page() {
+                ogg::PacketWriteEndInfo::EndPage
+            } else {
+                ogg::PacketWriteEndInfo::NormalPacket
+            };
+
+            let packet_serial = packet.stream_serial();
+            let packet_absgp = packet.absgp_page();
+
+            writer
+                .write_packet(packet.data, packet_serial, packet_inf, packet_absgp)
+                .map_err(|e| TagsWriteError {
+                    kind: TagsWriteErrorKind::Write,
+                    error: e.into(),
+                })?;
+        } else {
+            break;
+        }
+    }
+
+    Ok(out_buffer.into_inner())
 }

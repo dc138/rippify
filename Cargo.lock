@@ -470,7 +470,7 @@ dependencies = [
  "nonzero_ext",
  "parking_lot",
  "rand",
- "smallvec 1.10.0",
+ "smallvec",
 ]
 
 [[package]]
@@ -746,13 +746,13 @@ dependencies = [
 
 [[package]]
 name = "lewton"
-version = "0.9.4"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d542c1a317036c45c2aa1cf10cc9d403ca91eb2d333ef1a4917e5cb10628bd0"
+checksum = "777b48df9aaab155475a83a7df3070395ea1ac6902f5cd062b8f2b028075c030"
 dependencies = [
  "byteorder",
- "ogg",
- "smallvec 0.6.14",
+ "ogg 0.8.0",
+ "tinyvec",
 ]
 
 [[package]]
@@ -888,12 +888,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "518ef76f2f87365916b142844c16d8fefd85039bc5699050210a7778ee1cd1de"
 
 [[package]]
-name = "maybe-uninit"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60302e4db3a61da70c0cb7991976248362f30319e88850c487b9b95bbf059e00"
-
-[[package]]
 name = "memchr"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -971,7 +965,7 @@ dependencies = [
  "num-iter",
  "num-traits",
  "rand",
- "smallvec 1.10.0",
+ "smallvec",
  "zeroize",
 ]
 
@@ -1038,22 +1032,20 @@ dependencies = [
 
 [[package]]
 name = "ogg"
-version = "0.7.1"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13e571c3517af9e1729d4c63571a27edd660ade0667973bfc74a67c660c2b651"
+checksum = "6951b4e8bf21c8193da321bcce9c9dd2e13c858fe078bf9054a288b419ae5d6e"
 dependencies = [
  "byteorder",
 ]
 
 [[package]]
-name = "oggvorbismeta"
-version = "0.1.0"
+name = "ogg"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a96cf4d043ab82015fc72deba4e36845c95b21433abdd47257f061a8fd744d66"
+checksum = "960d0efc0531a452c442c777288f704b300a5f743c04a14eba71f9aabc4897ac"
 dependencies = [
  "byteorder",
- "lewton",
- "ogg",
 ]
 
 [[package]]
@@ -1089,7 +1081,7 @@ dependencies = [
  "libc",
  "petgraph",
  "redox_syscall 0.2.16",
- "smallvec 1.10.0",
+ "smallvec",
  "thread-id",
  "windows-sys 0.45.0",
 ]
@@ -1344,10 +1336,11 @@ dependencies = [
  "async-recursion",
  "colored",
  "getopts",
+ "lewton",
  "librespot-audio",
  "librespot-core",
  "librespot-metadata",
- "oggvorbismeta",
+ "ogg 0.9.0",
  "regex",
  "tokio",
 ]
@@ -1609,15 +1602,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6528351c9bc8ab22353f9d776db39a20288e8d6c37ef8cfe3317cf875eecfc2d"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "smallvec"
-version = "0.6.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b97fcaeba89edba30f044a10c6a3cc39df9c3f17d7cd829dd1446cab35f890e0"
-dependencies = [
- "maybe-uninit",
 ]
 
 [[package]]

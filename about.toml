@@ -6,6 +6,7 @@ accepted = [
     "BSD-3-Clause",
     "OpenSSL",
     "Unicode-DFS-2016",
+    "GPL-3.0",
 ]
 
 workarounds = [
