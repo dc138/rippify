@@ -16,6 +16,8 @@ use std::io::Read;
 use std::path;
 use std::process as proc;
 
+static VERSION: &str = "0.2.0";
+
 #[tokio::main]
 async fn main() {
     let opts = match parse_opts() {
@@ -276,6 +278,7 @@ fn parse_opts() -> Result<UserParams, getopts::Fail> {
     let mut opts = getopts::Options::new();
 
     opts.optflag("h", "help", "print the help menu");
+    opts.optflag("v", "version", "show copyright and version information");
 
     opts.optopt("u", "user", "user login name, required", "USER");
     opts.optopt("p", "pass", "user password, required", "PASS");
@@ -288,6 +291,11 @@ fn parse_opts() -> Result<UserParams, getopts::Fail> {
 
     let matches = opts.parse(&args[1..])?;
     let input = matches.free.clone();
+
+    if matches.opt_present("v") {
+        print_version();
+        proc::exit(0);
+    }
 
     if matches.opt_present("h") || !matches.opt_present("u") || !matches.opt_present("p") || input.is_empty() {
         print_usage(&program, opts);
@@ -314,6 +322,16 @@ fn parse_opts() -> Result<UserParams, getopts::Fail> {
 fn print_usage(program: &str, opts: getopts::Options) {
     let brief = format!("Usage: {} [OPTIONS] URIs...", program);
     print!("{}", opts.usage(&brief));
+}
+
+fn print_version() {
+    println!("rippify version {}\n", VERSION);
+    println!(
+        "Copyright (C) 2023 Antonio de Haro. \n\
+        This program is distributed under the MIT license, see the attatched LICENSE.txt file for terms and conditions. \n\
+        This software is provided without any warranty of any kind. \n\
+        Copyright atributions for any third party code included are provided in the attatched COPYRIGHT.md file."
+    );
 }
 
 enum ResourceKind {
